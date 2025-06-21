@@ -117,7 +117,7 @@ tasks:
     desc: Test extension info functionality
     deps: [make-executable]
     cmds:
-      - ./{{.SCRIPT_NAME}} info --dry-run ms-python.python
+      - ./{{.SCRIPT_NAME}} info ms-python.python
 
   test-config:
     desc: Test configuration commands
