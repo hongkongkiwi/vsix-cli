@@ -10,6 +10,10 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   update-homebrew:
     name: Update Homebrew Formula
@@ -21,6 +25,17 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Debug release event
+      if: github.event_name == 'release'
+      run: |
+        echo "Release event detected!"
+        echo "Event name: ${{ github.event_name }}"
+        echo "Release tag: ${{ github.event.release.tag_name }}"
+        echo "Release name: ${{ github.event.release.name }}"
+        echo "Release published: ${{ github.event.release.published_at }}"
+        echo "Release draft: ${{ github.event.release.draft }}"
+        echo "Release prerelease: ${{ github.event.release.prerelease }}"
 
     - name: Checkout homebrew tap repository
       uses: actions/checkout@v4
