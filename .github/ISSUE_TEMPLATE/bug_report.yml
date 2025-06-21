@@ -1,0 +1,124 @@
+name: 🐛 Bug Report
+description: File a bug report to help us improve vsix-cli
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the form below to help us understand the issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: vsix-cli Version
+      description: What version of vsix-cli are you running?
+      placeholder: "e.g., 4.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: What operating system are you using?
+      options:
+        - Linux (Ubuntu)
+        - Linux (CentOS/RHEL)
+        - Linux (Arch)
+        - Linux (Other)
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Windows (WSL)
+        - Windows (Git Bash)
+        - Windows (Cygwin)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: shell
+    attributes:
+      label: Shell Environment
+      description: What shell are you using?
+      placeholder: "e.g., bash 5.1, zsh 5.8, dash"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command That Failed
+      description: What command were you trying to run?
+      placeholder: |
+        vsix-cli download ms-python.python
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: "Extension should download successfully..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+      placeholder: "Command failed with error..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error Output
+      description: Please paste the full error message here
+      placeholder: "Paste error output here..."
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Run command `vsix-cli ...`
+        2. See error
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem here
+      placeholder: "Network restrictions, proxy settings, etc."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please confirm the following before submitting
+      options:
+        - label: I have searched existing issues to avoid duplicates
+          required: true
+        - label: I am using the latest version of vsix-cli
+          required: true
+        - label: I have provided all the required information above
+          required: true

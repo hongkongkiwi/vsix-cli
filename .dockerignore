@@ -1,0 +1,69 @@
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+CONTRIBUTING.md
+CHANGELOG.md
+
+# GitHub workflows and templates
+.github/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
+.temp/
+tmp/
+
+# Logs
+*.log
+logs/
+
+# Downloaded extensions
+*.vsix
+extensions/
+test-extensions/
+
+# Config files (will be created in container)
+config
+.config/
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Test artifacts
+test-results/
+coverage/
+*.coverage
+
+# Build artifacts
+dist/
+build/
+
+# Dependencies
+node_modules/
+
+# Environment files
+.env*
+
+# Archive files
+*.tar
+*.tar.gz
+*.zip
+*.rar
+
+# Only include the main script
+!vsix-cli 

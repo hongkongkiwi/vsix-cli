@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - GitHub workflows for CI/CD
 - Proper project structure with LICENSE and .gitignore
+- Docker support with Alpine-based image
+- Multi-platform Docker builds (amd64, arm64)
+- Docker Hub and GitHub Container Registry publishing
 
 ### Changed
 - Repository structure reorganization

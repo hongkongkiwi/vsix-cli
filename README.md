@@ -59,6 +59,32 @@ chmod +x vsix-cli
 sudo ln -s "$(pwd)/vsix-cli" /usr/local/bin/vsix-cli
 ```
 
+### Docker
+
+```bash
+# Pull the image
+docker pull hongkongkiwi/vsix-cli:latest
+
+# Or from GitHub Container Registry
+docker pull ghcr.io/hongkongkiwi/vsix-cli:latest
+
+# Run directly
+docker run --rm hongkongkiwi/vsix-cli:latest --help
+
+# Download extensions to current directory
+docker run --rm -v $(pwd):/output hongkongkiwi/vsix-cli:latest download ms-python.python
+
+# Search for extensions
+docker run --rm hongkongkiwi/vsix-cli:latest search python
+```
+
+### Homebrew (Coming Soon)
+
+```bash
+# Will be available after first release
+brew install hongkongkiwi/tap/vsix-cli
+```
+
 ### Dependencies
 
 The script requires one of the following for downloads:
@@ -323,12 +349,43 @@ done
 ### CI/CD Usage
 
 ```yaml
-# GitHub Actions example
+# GitHub Actions example - Direct download
 - name: Install extensions
   run: |
     curl -O https://raw.githubusercontent.com/hongkongkiwi/vsix-cli/main/vsix-cli
     chmod +x vsix-cli
     ./vsix-cli install --quiet --yes --editors all ms-python.python
+
+# GitHub Actions example - Docker
+- name: Download extensions
+  run: |
+    docker run --rm -v ${{ github.workspace }}:/output \
+      hongkongkiwi/vsix-cli:latest download ms-python.python github.copilot
+```
+
+### Docker Examples
+
+```bash
+# Download extensions with custom marketplace
+docker run --rm -v $(pwd):/output \
+  hongkongkiwi/vsix-cli:latest download --marketplace openvsx ms-python.python
+
+# Search with limit and save results
+docker run --rm hongkongkiwi/vsix-cli:latest search --limit 5 python
+
+# Get extension info
+docker run --rm hongkongkiwi/vsix-cli:latest info ms-python.python
+
+# Run with custom config (mount config directory)
+docker run --rm -v $(pwd):/output -v ~/.config/vsix-cli:/home/vsix/.config/vsix-cli \
+  hongkongkiwi/vsix-cli:latest download ms-python.python
+
+# Dry run to preview downloads
+docker run --rm hongkongkiwi/vsix-cli:latest download --dry-run ms-python.python
+
+# Batch download from file
+cat extensions.txt | docker run --rm -i -v $(pwd):/output \
+  hongkongkiwi/vsix-cli:latest download
 ```
 
 ## 🔄 Global Options

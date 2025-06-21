@@ -1,0 +1,576 @@
+version: '3'
+
+vars:
+  SCRIPT_NAME: vsix-cli
+  DOCKER_IMAGE: vsix-cli:dev
+  DOCKER_REGISTRY: ghcr.io/hongkongkiwi/vsix-cli
+
+tasks:
+  default:
+    desc: Run all basic tests
+    deps: [lint, syntax, test-basic]
+
+  # Development Tasks
+  setup:
+    desc: Setup development environment
+    cmds:
+      - task: install-deps
+      - task: make-executable
+
+  install-deps:
+    desc: Install required dependencies
+    platforms: [linux]
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y shellcheck curl jq
+    status:
+      - command -v shellcheck
+      - command -v curl
+      - command -v jq
+
+  install-deps:macos:
+    desc: Install dependencies on macOS
+    platforms: [darwin]
+    cmds:
+      - brew install shellcheck curl jq
+    status:
+      - command -v shellcheck
+      - command -v curl
+      - command -v jq
+
+  check-deps:
+    desc: Check if all dependencies are installed
+    cmds:
+      - command -v shellcheck || (echo "shellcheck not found" && exit 1)
+      - command -v curl || (echo "curl not found" && exit 1)
+      - command -v jq || (echo "jq not found" && exit 1)
+      - command -v docker || echo "docker not found (optional)"
+
+  make-executable:
+    desc: Make the script executable
+    cmds:
+      - chmod +x {{.SCRIPT_NAME}}
+    sources:
+      - "{{.SCRIPT_NAME}}"
+
+  # Linting and Quality
+  lint:
+    desc: Lint the shell script with ShellCheck
+    deps: [make-executable]
+    cmds:
+      - shellcheck {{.SCRIPT_NAME}}
+    sources:
+      - "{{.SCRIPT_NAME}}"
+
+  syntax:
+    desc: Check bash syntax
+    cmds:
+      - bash -n {{.SCRIPT_NAME}}
+    sources:
+      - "{{.SCRIPT_NAME}}"
+
+  security:
+    desc: Run security checks
+    cmds:
+      - |
+        echo "Checking for hardcoded secrets..."
+        ! grep -r -i "password\|secret\|key\|token" {{.SCRIPT_NAME}} | grep -v "# " | grep -v "Show"
+      - |
+        echo "Checking for unsafe practices..."
+        ! grep -n "eval" {{.SCRIPT_NAME}}
+        ! grep -n "curl.*-k\|wget.*--no-check-certificate" {{.SCRIPT_NAME}}
+      - echo "Security scan passed"
+
+  # Testing Tasks
+  test-basic:
+    desc: Run basic functionality tests
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} --help
+      - ./{{.SCRIPT_NAME}} version
+
+  test-help:
+    desc: Test help command
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} --help
+
+  test-version:
+    desc: Test version command
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} version
+
+  test-search:
+    desc: Test search functionality (dry run)
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} search --dry-run python --limit 3
+
+  test-download:
+    desc: Test download functionality (dry run)
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} download --dry-run ms-python.python
+
+  test-info:
+    desc: Test extension info functionality
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} info --dry-run ms-python.python
+
+  test-config:
+    desc: Test configuration commands
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} config get || true
+      - ./{{.SCRIPT_NAME}} config set default_marketplace openvsx || true
+      - ./{{.SCRIPT_NAME}} config get default_marketplace || true
+      - ./{{.SCRIPT_NAME}} config reset || true
+
+  test-marketplaces:
+    desc: Test different marketplace functionality
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} info --marketplace official --dry-run ms-python.python
+      - ./{{.SCRIPT_NAME}} info --marketplace openvsx --dry-run ms-python.python || true
+      - ./{{.SCRIPT_NAME}} info --marketplace coder --dry-run ms-python.python || true
+
+  test-urls:
+    desc: Test URL parsing functionality
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} info --dry-run "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+      - ./{{.SCRIPT_NAME}} download --dry-run "https://open-vsx.org/extension/ms-python/python"
+
+  test-errors:
+    desc: Test error handling
+    deps: [make-executable]
+    cmds:
+      - |
+        set +e
+        ./{{.SCRIPT_NAME}} download invalid.extension.id 2>/dev/null
+        if [ $? -eq 0 ]; then
+          echo "Error: Should have failed with invalid extension ID"
+          exit 1
+        fi
+        ./{{.SCRIPT_NAME}} info --marketplace invalid-marketplace ms-python.python 2>/dev/null
+        if [ $? -eq 0 ]; then
+          echo "Error: Should have failed with invalid marketplace"
+          exit 1
+        fi
+        echo "Error handling tests passed"
+
+  test-all:
+    desc: Run comprehensive test suite
+    deps: [lint, syntax, security]
+    cmds:
+      - task: test-basic
+      - task: test-search
+      - task: test-download
+      - task: test-info
+      - task: test-config
+      - task: test-marketplaces
+      - task: test-urls
+      - task: test-errors
+
+  performance:
+    desc: Run performance tests
+    deps: [make-executable]
+    cmds:
+      - |
+        echo "Testing startup time..."
+        start_time=$(date +%s%N)
+        ./{{.SCRIPT_NAME}} --help >/dev/null
+        end_time=$(date +%s%N)
+        duration=$(( (end_time - start_time) / 1000000 ))
+        echo "Startup time: ${duration}ms"
+        if [ $duration -gt 2000 ]; then
+          echo "Warning: Slow startup time (>${duration}ms)"
+        fi
+
+  # Docker Tasks
+  docker:build:
+    desc: Build Docker image
+    cmds:
+      - docker build -t {{.DOCKER_IMAGE}} .
+    sources:
+      - Dockerfile
+      - .dockerignore
+      - "{{.SCRIPT_NAME}}"
+
+  docker:test:
+    desc: Test Docker image
+    deps: [docker:build]
+    cmds:
+      - docker run --rm {{.DOCKER_IMAGE}} --help
+      - docker run --rm {{.DOCKER_IMAGE}} version
+      - docker run --rm {{.DOCKER_IMAGE}} download --dry-run ms-python.python
+
+  docker:test-volume:
+    desc: Test Docker image with volume mount
+    deps: [docker:build]
+    cmds:
+      - mkdir -p test-output
+      - docker run --rm -v $(pwd)/test-output:/output {{.DOCKER_IMAGE}} download --dry-run ms-python.python
+      - rm -rf test-output
+
+  docker:clean:
+    desc: Clean Docker images
+    cmds:
+      - docker rmi {{.DOCKER_IMAGE}} 2>/dev/null || true
+
+  docker:all:
+    desc: Run all Docker tests
+    cmds:
+      - task: docker:build
+      - task: docker:test
+      - task: docker:test-volume
+
+  # Version Management Tasks
+  version:get:
+    desc: Get current version from script
+    cmds:
+      - grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2
+
+  version:update:
+    desc: Update version in script manually
+    interactive: true
+    cmds:
+      - |
+        current_version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current version: $current_version"
+        read -p "Enter new version (e.g., 1.2.3): " version
+        sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$version\"/" {{.SCRIPT_NAME}}
+        echo "Version updated from $current_version to $version"
+        echo "Don't forget to update CHANGELOG.md!"
+
+  version:validate:
+    desc: Validate version format and consistency
+    cmds:
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+          echo "Invalid version format: $version"
+          echo "Expected format: X.Y.Z or X.Y.Z-prerelease (semantic versioning)"
+          exit 1
+        fi
+        if [[ ! "$version" =~ -dev ]] && ! grep -q "\[$version\]" CHANGELOG.md; then
+          echo "Version $version not found in CHANGELOG.md"
+          echo "Please update CHANGELOG.md with the current version"
+          exit 1
+        fi
+        echo "Version validation passed: $version"
+
+  # Version Bumping Tasks
+  version:bump:patch:
+    desc: Bump patch version (1.0.0 -> 1.0.1)
+    cmds:
+      - |
+        current_version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current version: $current_version"
+        
+        # Remove any pre-release suffix
+        base_version=$(echo "$current_version" | cut -d'-' -f1)
+        
+        # Split version into parts
+        IFS='.' read -r major minor patch <<< "$base_version"
+        new_patch=$((patch + 1))
+        new_version="$major.$minor.$new_patch"
+        
+        sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
+        echo "Version bumped from $current_version to $new_version"
+        echo "Please update CHANGELOG.md with the new version!"
+
+  version:bump:minor:
+    desc: Bump minor version (1.0.0 -> 1.1.0)
+    cmds:
+      - |
+        current_version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current version: $current_version"
+        
+        # Remove any pre-release suffix
+        base_version=$(echo "$current_version" | cut -d'-' -f1)
+        
+        # Split version into parts
+        IFS='.' read -r major minor patch <<< "$base_version"
+        new_minor=$((minor + 1))
+        new_version="$major.$new_minor.0"
+        
+        sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
+        echo "Version bumped from $current_version to $new_version"
+        echo "Please update CHANGELOG.md with the new version!"
+
+  version:bump:major:
+    desc: Bump major version (1.0.0 -> 2.0.0)
+    cmds:
+      - |
+        current_version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current version: $current_version"
+        
+        # Remove any pre-release suffix
+        base_version=$(echo "$current_version" | cut -d'-' -f1)
+        
+        # Split version into parts
+        IFS='.' read -r major minor patch <<< "$base_version"
+        new_major=$((major + 1))
+        new_version="$new_major.0.0"
+        
+        sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
+        echo "Version bumped from $current_version to $new_version"
+        echo "Please update CHANGELOG.md with the new version!"
+
+  version:bump:dev:
+    desc: Create development version (1.0.0 -> 1.0.1-dev)
+    cmds:
+      - |
+        current_version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current version: $current_version"
+        
+        # Remove any existing pre-release suffix
+        base_version=$(echo "$current_version" | cut -d'-' -f1)
+        
+        # If already a dev version, just update the base
+        if [[ "$current_version" =~ -dev ]]; then
+          new_version="$base_version-dev"
+        else
+          # Split version into parts and bump patch
+          IFS='.' read -r major minor patch <<< "$base_version"
+          new_patch=$((patch + 1))
+          new_version="$major.$minor.$new_patch-dev"
+        fi
+        
+        sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
+        echo "Version bumped from $current_version to $new_version"
+
+  version:bump:rc:
+    desc: Create release candidate (1.0.0 -> 1.0.1-rc.1)
+    interactive: true
+    cmds:
+      - |
+        current_version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current version: $current_version"
+        
+        # Remove any existing pre-release suffix
+        base_version=$(echo "$current_version" | cut -d'-' -f1)
+        
+        read -p "Enter RC number (default: 1): " rc_num
+        rc_num=${rc_num:-1}
+        
+        # Split version into parts and bump patch
+        IFS='.' read -r major minor patch <<< "$base_version"
+        new_patch=$((patch + 1))
+        new_version="$major.$minor.$new_patch-rc.$rc_num"
+        
+        sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
+        echo "Version bumped from $current_version to $new_version"
+
+  # Git Tag Tasks
+  tag:create:
+    desc: Create git tag for current version
+    deps: [version:validate]
+    cmds:
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        if git tag -l | grep -q "^v$version$"; then
+          echo "Tag v$version already exists!"
+          exit 1
+        fi
+        git tag -a "v$version" -m "Release v$version"
+        echo "Created tag v$version"
+
+  tag:push:
+    desc: Push git tag to origin
+    cmds:
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        git push origin "v$version"
+        echo "Pushed tag v$version"
+
+  tag:delete:
+    desc: Delete git tag (local and remote)
+    interactive: true
+    cmds:
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        read -p "Delete tag v$version? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+          git tag -d "v$version" 2>/dev/null || true
+          git push origin ":refs/tags/v$version" 2>/dev/null || true
+          echo "Deleted tag v$version"
+        else
+          echo "Tag deletion cancelled"
+        fi
+
+  # Release Tasks
+  release:patch:
+    desc: Release patch version (bug fixes)
+    cmds:
+      - task: test-all
+      - task: version:bump:patch
+      - echo "Patch version ready for release. Don't forget to:"
+      - echo "1. Update CHANGELOG.md"
+      - echo "2. Commit changes"
+      - echo "3. Run 'task release:publish'"
+
+  release:minor:
+    desc: Release minor version (new features)
+    cmds:
+      - task: test-all
+      - task: version:bump:minor
+      - echo "Minor version ready for release. Don't forget to:"
+      - echo "1. Update CHANGELOG.md"
+      - echo "2. Commit changes"
+      - echo "3. Run 'task release:publish'"
+
+  release:major:
+    desc: Release major version (breaking changes)
+    cmds:
+      - task: test-all
+      - task: version:bump:major
+      - echo "Major version ready for release. Don't forget to:"
+      - echo "1. Update CHANGELOG.md"
+      - echo "2. Commit changes"
+      - echo "3. Run 'task release:publish'"
+
+  release:rc:
+    desc: Release candidate version
+    cmds:
+      - task: test-all
+      - task: version:bump:rc
+      - task: tag:create
+      - task: tag:push
+      - echo "Release candidate published!"
+
+  release:dev:
+    desc: Development version for testing
+    cmds:
+      - task: test-basic
+      - task: version:bump:dev
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Development version created: $version"
+
+  release:publish:
+    desc: Publish current version (create and push tag)
+    deps: [version:validate]
+    cmds:
+      - task: test-all
+      - task: docker:all
+      - task: tag:create
+      - task: tag:push
+      - echo "Release published! GitHub Actions will handle the rest."
+
+  release:prepare:
+    desc: Prepare for release (run all checks)
+    cmds:
+      - task: test-all
+      - task: docker:all
+      - task: version:validate
+      - task: docs:validate
+      - echo "Release preparation complete!"
+
+  release:status:
+    desc: Show current release status
+    cmds:
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current version: $version"
+        
+        if [[ "$version" =~ -dev ]]; then
+          echo "Status: Development version"
+        elif [[ "$version" =~ -rc ]]; then
+          echo "Status: Release candidate"
+        elif [[ "$version" =~ -alpha|-beta ]]; then
+          echo "Status: Pre-release version"
+        else
+          echo "Status: Stable release version"
+        fi
+        
+        if git tag -l | grep -q "^v$version$"; then
+          echo "Git tag: EXISTS (v$version)"
+        else
+          echo "Git tag: NOT CREATED"
+        fi
+        
+        if git status --porcelain | grep -q .; then
+          echo "Working directory: HAS UNCOMMITTED CHANGES"
+        else
+          echo "Working directory: CLEAN"
+        fi
+
+  # Documentation Tasks
+  docs:help:
+    desc: Generate help documentation
+    deps: [make-executable]
+    cmds:
+      - mkdir -p docs
+      - ./{{.SCRIPT_NAME}} --help > docs/help.txt
+      - echo "Help documentation generated in docs/help.txt"
+
+  docs:validate:
+    desc: Validate documentation completeness
+    cmds:
+      - |
+        files=("README.md" "LICENSE" "CHANGELOG.md" "CONTRIBUTING.md" ".gitignore")
+        for file in "${files[@]}"; do
+          if [ ! -f "$file" ]; then
+            echo "Missing required file: $file"
+            exit 1
+          fi
+        done
+        echo "Documentation validation passed"
+
+  # CI Simulation
+  ci:
+    desc: Simulate CI pipeline locally
+    cmds:
+      - task: check-deps
+      - task: lint
+      - task: syntax
+      - task: security
+      - task: test-all
+      - task: performance
+      - task: docker:all
+      - task: docs:validate
+      - echo "CI simulation completed successfully!"
+
+  # Cleanup Tasks
+  clean:
+    desc: Clean up temporary files and Docker images
+    cmds:
+      - rm -f {{.SCRIPT_NAME}}.bak
+      - rm -rf test-output
+      - task: docker:clean
+      - echo "Cleanup completed"
+
+  # Development Workflow
+  dev:
+    desc: Development workflow - lint, test, and validate
+    cmds:
+      - task: lint
+      - task: test-basic
+      - echo "Development checks passed!"
+
+  pre-commit:
+    desc: Pre-commit checks
+    cmds:
+      - task: lint
+      - task: syntax
+      - task: security
+      - task: test-basic
+      - echo "Pre-commit checks passed!"
+
+  # Installation Tasks
+  install:local:
+    desc: Install script to /usr/local/bin
+    deps: [make-executable, test-basic]
+    cmds:
+      - sudo cp {{.SCRIPT_NAME}} /usr/local/bin/
+      - echo "{{.SCRIPT_NAME}} installed to /usr/local/bin/"
+
+  uninstall:local:
+    desc: Remove script from /usr/local/bin
+    cmds:
+      - sudo rm -f /usr/local/bin/{{.SCRIPT_NAME}}
+      - echo "{{.SCRIPT_NAME}} removed from /usr/local/bin/" 

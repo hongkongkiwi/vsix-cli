@@ -1,0 +1,69 @@
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "hongkongkiwi"
+    assignees:
+      - "hongkongkiwi"
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "auto-merge"
+    
+    # Group updates for related actions
+    groups:
+      docker-actions:
+        patterns:
+          - "docker/*"
+        
+      checkout-actions:
+        patterns:
+          - "actions/checkout*"
+          - "actions/setup-*"
+          - "actions/upload-*"
+          - "actions/download-*"
+          
+      security-actions:
+        patterns:
+          - "github/codeql-action*"
+          - "ossf/*"
+          - "securecodewarrior/*"
+    
+    # Allow both direct and indirect updates
+    allow:
+      - dependency-type: "direct"
+      - dependency-type: "indirect"
+    
+    # Ignore specific actions if needed (uncomment and customize as needed)
+    # ignore:
+    #   - dependency-name: "actions/checkout"
+    #     versions: ["v3"]
+    
+    # Increase pull request limit during security updates
+    versioning-strategy: increase
+
+  # Docker (if you add any Dockerfile dependencies later)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"
+      - "auto-merge" 

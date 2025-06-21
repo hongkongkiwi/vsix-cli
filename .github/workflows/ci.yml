@@ -1,0 +1,321 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch: {}
+
+jobs:
+  lint:
+    name: Lint Shell Script
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint with ShellCheck
+        run: shellcheck vsix-cli
+
+      - name: Check script syntax
+        run: bash -n vsix-cli
+
+  test-basic:
+    name: Basic Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Make script executable
+        run: chmod +x vsix-cli
+
+      - name: Test help command
+        run: ./vsix-cli --help
+
+      - name: Test version command
+        run: ./vsix-cli version
+
+      - name: Test config commands
+        run: |
+          ./vsix-cli config get || true
+          ./vsix-cli config set default_marketplace openvsx || true
+          ./vsix-cli config get default_marketplace || true
+          ./vsix-cli config reset || true
+
+      - name: Test dry-run commands
+        run: |
+          ./vsix-cli search --dry-run python || true
+          ./vsix-cli info --dry-run ms-python.python || true
+          ./vsix-cli download --dry-run ms-python.python || true
+
+  test-cross-platform:
+    name: Cross-Platform Tests
+    needs: lint
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: macos-latest
+            shell: bash
+          - os: windows-latest
+            shell: bash
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+
+      - name: Setup dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install curl jq
+
+      - name: Setup dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          # Windows already has curl
+          choco install jq
+
+      - name: Make script executable
+        run: chmod +x vsix-cli
+
+      - name: Test basic functionality
+        run: |
+          ./vsix-cli --help
+          ./vsix-cli version
+
+      - name: Test marketplace validation
+        run: |
+          ./vsix-cli info --marketplace official --dry-run ms-python.python || true
+          ./vsix-cli info --marketplace openvsx --dry-run ms-python.python || true
+          ./vsix-cli info --marketplace coder --dry-run ms-python.python || true
+
+      - name: Test error handling
+        run: |
+          set +e  # Allow commands to fail
+          ./vsix-cli download invalid.extension.id 2>/dev/null
+          if [ $? -eq 0 ]; then
+            echo "Error: Should have failed with invalid extension ID"
+            exit 1
+          fi
+          ./vsix-cli info --marketplace invalid-marketplace ms-python.python 2>/dev/null
+          if [ $? -eq 0 ]; then
+            echo "Error: Should have failed with invalid marketplace"
+            exit 1
+          fi
+          set -e
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [lint, test-basic]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+
+      - name: Make script executable
+        run: chmod +x vsix-cli
+
+      - name: Test search functionality
+        run: |
+          timeout 30 ./vsix-cli search python --limit 3 || true
+
+      - name: Test extension info
+        run: |
+          timeout 30 ./vsix-cli info ms-python.python || true
+
+      - name: Test download (dry-run)
+        run: |
+          ./vsix-cli download --dry-run ms-python.python
+
+      - name: Test URL parsing
+        run: |
+          ./vsix-cli info --dry-run "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+          ./vsix-cli download --dry-run "https://open-vsx.org/extension/ms-python/python"
+
+      - name: Test multiple marketplaces
+        run: |
+          ./vsix-cli info --marketplace official --dry-run ms-python.python
+          ./vsix-cli info --marketplace openvsx --dry-run ms-python.python || true
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for hardcoded secrets
+        run: |
+          # Basic check for potential secrets
+          if grep -r -i "password\|secret\|key\|token" vsix-cli | grep -v "# " | grep -v "Show"; then
+            echo "Potential hardcoded secrets found"
+            exit 1
+          fi
+
+      - name: Check for unsafe practices
+        run: |
+          # Check for eval usage
+          if grep -n "eval" vsix-cli; then
+            echo "Usage of 'eval' found - review for security"
+            exit 1
+          fi
+          
+          # Check for curl/wget without verification
+          if grep -n "curl.*-k\|wget.*--no-check-certificate" vsix-cli; then
+            echo "Insecure curl/wget usage found"
+            exit 1
+          fi
+
+  documentation:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check required files
+        run: |
+          files=("README.md" "LICENSE" "CHANGELOG.md" "CONTRIBUTING.md" ".gitignore")
+          for file in "${files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "Missing required file: $file"
+              exit 1
+            fi
+          done
+
+      - name: Check README completeness
+        run: |
+          required_sections=("Installation" "Quick Start" "Commands" "Examples" "Contributing")
+          for section in "${required_sections[@]}"; do
+            if ! grep -q "$section" README.md; then
+              echo "Missing section in README: $section"
+              exit 1
+            fi
+          done
+
+      - name: Validate CHANGELOG format
+        run: |
+          if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
+            echo "CHANGELOG.md missing Unreleased section"
+            exit 1
+          fi
+
+  performance:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: test-basic
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Make script executable
+        run: chmod +x vsix-cli
+
+      - name: Test startup time
+        run: |
+          start_time=$(date +%s%N)
+          ./vsix-cli --help >/dev/null
+          end_time=$(date +%s%N)
+          duration=$(( (end_time - start_time) / 1000000 ))
+          echo "Startup time: ${duration}ms"
+          if [ $duration -gt 2000 ]; then
+            echo "Warning: Slow startup time (>${duration}ms)"
+          fi
+
+      - name: Memory usage test
+        run: |
+          # Basic memory usage check
+          /usr/bin/time -v ./vsix-cli --help 2>&1 | grep "Maximum resident set size" || true
+
+  validate-version:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from script
+        id: script_version
+        run: |
+          version=$(grep "readonly SCRIPT_VERSION=" vsix-cli | cut -d'"' -f2)
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "Script version: $version"
+
+      - name: Check version format
+        run: |
+          version="${{ steps.script_version.outputs.version }}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version format: $version"
+            echo "Expected format: X.Y.Z (semantic versioning)"
+            exit 1
+          fi
+
+      - name: Check changelog version
+        run: |
+          script_version="${{ steps.script_version.outputs.version }}"
+          if ! grep -q "\[$script_version\]" CHANGELOG.md; then
+            echo "Version $script_version not found in CHANGELOG.md"
+            echo "Please update CHANGELOG.md with the current version"
+            exit 1
+          fi
+
+  test-docker:
+    name: Test Docker Build
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (test only)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: vsix-cli:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Docker image
+        run: |
+          # Test basic functionality
+          docker run --rm vsix-cli:test --help
+          docker run --rm vsix-cli:test version
+          
+          # Test download with dry-run
+          docker run --rm vsix-cli:test download --dry-run ms-python.python
+          
+          # Test search
+          docker run --rm vsix-cli:test search --dry-run python || true
+          
+          # Test with volume mount
+          mkdir -p test-output
+          docker run --rm -v $(pwd)/test-output:/output vsix-cli:test download --dry-run ms-python.python
+          
+          # Cleanup
+          rm -rf test-output 
