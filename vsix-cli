@@ -1639,7 +1639,7 @@ check_dependencies() {
 # Function to show installation instructions for a package
 show_install_instructions() {
   local package="$1"
-  local alt_package="$2"
+  local alt_package="${2:-}"
 
   case "$MACHINE" in
   Mac)
