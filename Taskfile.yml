@@ -111,6 +111,15 @@ tasks:
       - ./{{.SCRIPT_NAME}} --help
       - ./{{.SCRIPT_NAME}} version
 
+  test-essential:
+    desc: Run essential tests (basic + core functionality)
+    deps: [make-executable]
+    cmds:
+      - ./{{.SCRIPT_NAME}} --help
+      - ./{{.SCRIPT_NAME}} version
+      - ./{{.SCRIPT_NAME}} info ms-python.python
+      - ./{{.SCRIPT_NAME}} download --dry-run ms-python.python
+
   test-help:
     desc: Test help command
     deps: [make-executable]
@@ -505,7 +514,7 @@ tasks:
     cmds:
       - task: lint
       - task: syntax
-      - task: test-basic
+      - task: test-essential
       - task: version:bump:patch
       - task: release:commit-and-publish
 
@@ -514,7 +523,7 @@ tasks:
     cmds:
       - task: lint
       - task: syntax
-      - task: test-basic
+      - task: test-essential
       - task: version:bump:minor
       - task: release:commit-and-publish
 
@@ -530,7 +539,7 @@ tasks:
     cmds:
       - task: lint
       - task: syntax
-      - task: test-basic
+      - task: test-essential
       - task: version:bump:rc
       - task: release:commit-and-publish
 
