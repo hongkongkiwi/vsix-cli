@@ -1,0 +1,106 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vim/
+
+# Temporary files
+*.tmp
+*.temp
+.temp/
+tmp/
+
+# Log files
+*.log
+logs/
+
+# Downloaded extensions for testing
+*.vsix
+extensions/
+test-extensions/
+
+# Config files (user-specific)
+config
+.config/
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Test artifacts
+test-results/
+coverage/
+*.coverage
+
+# Build artifacts
+dist/
+build/
+
+# Package manager files
+node_modules/
+package-lock.json
+yarn.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Shell history
+.bash_history
+.zsh_history
+
+# macOS
+*.dSYM/
+*.su
+.nfs*
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# Windows
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# Archive files
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+
+# Sensitive data
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local development
+local/
+.local/
+
+# Documentation build artifacts
+docs/_build/
+site/

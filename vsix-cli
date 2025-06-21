@@ -1,0 +1,2972 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Script metadata
+readonly SCRIPT_NAME="vsix-cli"
+readonly SCRIPT_VERSION="4.0.0"
+readonly SCRIPT_DESCRIPTION="Download VS Code extensions (.vsix files) from official or open-source marketplaces"
+
+# Exit codes
+readonly EXIT_SUCCESS=0
+readonly EXIT_GENERAL_ERROR=1
+readonly EXIT_INSTALLATION_FAILED=2
+readonly EXIT_DOWNLOAD_FAILED=3
+readonly EXIT_INVALID_EXTENSION_ID=4
+readonly EXIT_MISSING_DEPENDENCIES=5
+readonly EXIT_FILE_EXISTS=6
+readonly EXIT_NETWORK_ERROR=7
+
+# Detect OS for cross-platform compatibility
+OS="$(uname -s)"
+case "${OS}" in
+Linux*) MACHINE=Linux ;;
+Darwin*) MACHINE=Mac ;;
+CYGWIN* | MINGW* | MSYS*) MACHINE=Windows ;;
+*) MACHINE="UNKNOWN:${OS}" ;;
+esac
+
+# Detect WSL
+if [[ "$MACHINE" == "Linux" ]] && grep -q Microsoft /proc/version 2>/dev/null; then
+  MACHINE=WSL
+fi
+
+# Colors for output (check if terminal supports colors and no-color flag)
+setup_colors() {
+  if [[ "$NO_COLOR" == true ]] || [[ -n "${NO_COLOR:-}" ]] || [[ ! -t 1 ]] || ! command -v tput >/dev/null 2>&1 || ! tput setaf 1 >/dev/null 2>&1; then
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+  else
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m' # No Color
+  fi
+}
+
+# Global flags
+QUIET=false
+VERBOSE=false
+DRY_RUN=false
+SHOW_PROGRESS=true
+AUTO_YES=false
+NO_COLOR=false
+MARKETPLACE="official"  # Default marketplace
+MARKETPLACE_EXPLICITLY_SET=false  # Track if marketplace was set via command line
+INSTALL_TO_CURSOR=false
+INSTALL_TO_WINDSURF=false
+INSTALL_TO_TRAE=false
+INSTALL_TO_VSCODIUM=false
+INSTALL_TO_VSCODE=false
+
+# Extension settings
+EXTENSION_VERSION=""
+
+# Marketplace URLs and configurations
+OPENVSX_BASE_URL="https://open-vsx.org"
+CODER_MARKETPLACE_BASE_URL="https://extensions.coder.com"
+ECLIPSE_MARKETPLACE_BASE_URL="https://marketplace.eclipse.org"
+
+# Marketplace identifiers
+MARKETPLACE_OFFICIAL="official"
+MARKETPLACE_OPENVSX="openvsx"
+MARKETPLACE_CODER="coder"
+MARKETPLACE_ECLIPSE="eclipse"
+
+# Valid marketplace values for validation
+VALID_MARKETPLACES=("$MARKETPLACE_OFFICIAL" "$MARKETPLACE_OPENVSX" "$MARKETPLACE_CODER" "$MARKETPLACE_ECLIPSE")
+
+# Validation constants
+readonly EXTENSION_ID_REGEX='^[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+$'
+
+# Self-update constants with smart detection
+get_update_urls() {
+    local repo_url=""
+    local github_repo=""
+    
+    # Try to detect from environment variables first
+    if [[ -n "${VSIX_CLI_UPDATE_URL:-}" ]]; then
+        echo "${VSIX_CLI_UPDATE_URL}"
+        echo "${VSIX_CLI_VERSION_URL:-}"
+        return 0
+    fi
+    
+    # Try to detect from git remote if we're in a git repository
+    if command -v git >/dev/null 2>&1; then
+        repo_url=$(git -C "$(dirname "$0")" remote get-url origin 2>/dev/null || echo "")
+        if [[ -n "$repo_url" ]]; then
+            # Convert SSH to HTTPS and extract owner/repo
+            if [[ "$repo_url" =~ git@github\.com:([^/]+)/([^.]+)\.git ]]; then
+                github_repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+            elif [[ "$repo_url" =~ https://github\.com/([^/]+)/([^/]+)\.git ]]; then
+                github_repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+            elif [[ "$repo_url" =~ https://github\.com/([^/]+)/([^/]+) ]]; then
+                github_repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+            fi
+            
+            if [[ -n "$github_repo" ]]; then
+                echo "https://raw.githubusercontent.com/$github_repo/main/vsix-cli"
+                echo "https://api.github.com/repos/$github_repo/releases/latest"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Fallback to placeholder URLs
+    echo "https://raw.githubusercontent.com/your-username/your-repo/main/vsix-cli"
+    echo "https://api.github.com/repos/your-username/your-repo/releases/latest"
+}
+
+# Get update URLs
+read -r UPDATE_URL VERSION_CHECK_URL < <(get_update_urls)
+readonly UPDATE_URL
+readonly VERSION_CHECK_URL
+
+# Function to extract extension ID from URL or validate direct ID
+extract_extension_id() {
+    local input="$1"
+    
+    # Check if input is a URL
+    if [[ "$input" =~ ^https?:// ]]; then
+        # Supported URL patterns:
+        # VS Code Marketplace:
+        #   - https://marketplace.visualstudio.com/items?itemName=ms-python.python
+        #   - https://marketplace.visualstudio.com/items/ms-python.python
+        # Open VSX:
+        #   - https://open-vsx.org/extension/ms-python/python
+        # Coder Marketplace:
+        #   - https://extensions.coder.com/extension/ms-python/python
+        # Eclipse Marketplace:
+        #   - https://marketplace.eclipse.org/content/ms-python-python
+        
+        local extension_id=""
+        local detected_marketplace=""
+        
+        if [[ "$input" =~ itemName=([^&]+) ]]; then
+            # Standard marketplace URL with itemName parameter
+            extension_id="${BASH_REMATCH[1]}"
+            detected_marketplace="$MARKETPLACE_OFFICIAL"
+        elif [[ "$input" =~ marketplace\.visualstudio\.com/items/([^/?]+) ]]; then
+            # Direct marketplace URL without itemName parameter
+            extension_id="${BASH_REMATCH[1]}"
+            detected_marketplace="$MARKETPLACE_OFFICIAL"
+        elif [[ "$input" =~ open-vsx\.org/extension/([^/]+)/([^/?]+) ]]; then
+            # Open VSX URL format: publisher/name
+            local publisher="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            extension_id="$publisher.$name"
+            detected_marketplace="$MARKETPLACE_OPENVSX"
+            # Set marketplace for this extension
+            set_marketplace "$MARKETPLACE_OPENVSX"
+        elif [[ "$input" =~ extensions\.coder\.com/extension/([^/]+)/([^/?]+) ]]; then
+            # Coder Marketplace URL format: publisher/name
+            local publisher="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            extension_id="$publisher.$name"
+            detected_marketplace="$MARKETPLACE_CODER"
+            # Set marketplace for this extension
+            set_marketplace "$MARKETPLACE_CODER"
+        elif [[ "$input" =~ marketplace\.eclipse\.org/content/([^/?]+) ]]; then
+            # Eclipse Marketplace URL format (simplified)
+            # Note: Eclipse marketplace has a different structure, this is a basic implementation
+            local content_id="${BASH_REMATCH[1]}"
+            # Try to convert Eclipse content ID to extension ID format
+            extension_id="${content_id//-/.}"
+            detected_marketplace="$MARKETPLACE_ECLIPSE"
+            # Set marketplace for this extension
+            set_marketplace "$MARKETPLACE_ECLIPSE"
+        else
+            error "Unable to extract extension ID from URL: $input"
+            echo "Supported URL formats:"
+            echo "  VS Code Marketplace:"
+            echo "    - https://marketplace.visualstudio.com/items?itemName=publisher.name"
+            echo "    - https://marketplace.visualstudio.com/items/publisher.name"
+            echo "  Open VSX Registry:"
+            echo "    - https://open-vsx.org/extension/publisher/name"
+            echo "  Coder Marketplace:"
+            echo "    - https://extensions.coder.com/extension/publisher/name"
+            echo "  Eclipse Marketplace:"
+            echo "    - https://marketplace.eclipse.org/content/extension-name"
+            return 1
+        fi
+        
+        if [[ -z "$extension_id" ]]; then
+            error "Failed to extract extension ID from URL"
+            return 1
+        fi
+        
+        # Validate the extracted ID (skip for Eclipse as it has different format)
+        if [[ "$detected_marketplace" != "$MARKETPLACE_ECLIPSE" ]] && ! validate_extension_id_format "$extension_id"; then
+            error "Extracted extension ID is invalid: $extension_id"
+            return 1
+        fi
+        
+        # Output the extension ID and detected marketplace info in verbose mode
+        if [[ "$VERBOSE" == true && -n "$detected_marketplace" ]]; then
+            verbose "Detected marketplace: $(get_marketplace_name "$detected_marketplace")"
+        fi
+        
+        echo "$extension_id"
+        return 0
+    else
+        # Direct extension ID - validate format
+        if ! validate_extension_id_format "$input"; then
+            return 1
+        fi
+        echo "$input"
+        return 0
+    fi
+}
+
+# Function to get marketplace name for display
+get_marketplace_name() {
+    local marketplace="$1"
+    case "$marketplace" in
+        "$MARKETPLACE_OFFICIAL") echo "VS Code Marketplace" ;;
+        "$MARKETPLACE_OPENVSX") echo "Open VSX Registry" ;;
+        "$MARKETPLACE_CODER") echo "Coder Marketplace" ;;
+        "$MARKETPLACE_ECLIPSE") echo "Eclipse Marketplace" ;;
+        *) echo "Unknown Marketplace" ;;
+    esac
+}
+
+# Validate marketplace value
+validate_marketplace() {
+    local marketplace="$1"
+    local valid_marketplace
+    for valid_marketplace in "${VALID_MARKETPLACES[@]}"; do
+        if [[ "$marketplace" == "$valid_marketplace" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Set marketplace with validation
+set_marketplace() {
+    local marketplace="$1"
+    local explicit="${2:-false}"
+    
+    if ! validate_marketplace "$marketplace"; then
+        error "Invalid marketplace: $marketplace"
+        echo "Valid marketplaces: ${VALID_MARKETPLACES[*]}"
+        return 1
+    fi
+    
+    # Only set if not explicitly set before, or if this is an explicit set
+    if [[ "$MARKETPLACE_EXPLICITLY_SET" == false ]] || [[ "$explicit" == true ]]; then
+        MARKETPLACE="$marketplace"
+        if [[ "$explicit" == true ]]; then
+            MARKETPLACE_EXPLICITLY_SET=true
+        fi
+    fi
+    
+    return 0
+}
+
+# Get current marketplace
+get_current_marketplace() {
+    echo "$MARKETPLACE"
+}
+
+# Validate extension ID format
+validate_extension_id_format() {
+    local extension_id="$1"
+    if [[ ! "$extension_id" =~ $EXTENSION_ID_REGEX ]]; then
+        error "Invalid extension ID format: $extension_id"
+        echo "Expected format: publisher.name (e.g., ms-python.python)"
+        return 1
+    fi
+    return 0
+}
+
+# Function to extract extension ID from URL or validate direct ID (sets global variable)
+extract_extension_id_to_var() {
+    local input="$1"
+    EXTRACTED_EXTENSION_ID=""
+    
+    # Check if input is a URL
+    if [[ "$input" =~ ^https?:// ]]; then
+        local extension_id=""
+        local detected_marketplace=""
+        
+        if [[ "$input" =~ itemName=([^&]+) ]]; then
+            extension_id="${BASH_REMATCH[1]}"
+            detected_marketplace="$MARKETPLACE_OFFICIAL"
+        elif [[ "$input" =~ marketplace\.visualstudio\.com/items/([^/?]+) ]]; then
+            extension_id="${BASH_REMATCH[1]}"
+            detected_marketplace="$MARKETPLACE_OFFICIAL"
+        elif [[ "$input" =~ open-vsx\.org/extension/([^/]+)/([^/?]+) ]]; then
+            local publisher="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            extension_id="$publisher.$name"
+            detected_marketplace="$MARKETPLACE_OPENVSX"
+            # Set marketplace for this extension
+            set_marketplace "$MARKETPLACE_OPENVSX"
+        elif [[ "$input" =~ extensions\.coder\.com/extension/([^/]+)/([^/?]+) ]]; then
+            # Coder Marketplace URL format: publisher/name
+            local publisher="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            extension_id="$publisher.$name"
+            detected_marketplace="$MARKETPLACE_CODER"
+            # Set marketplace for this extension
+            set_marketplace "$MARKETPLACE_CODER"
+        elif [[ "$input" =~ marketplace\.eclipse\.org/content/([^/?]+) ]]; then
+            # Eclipse Marketplace URL format (simplified)
+            local content_id="${BASH_REMATCH[1]}"
+            extension_id="${content_id//-/.}"
+            detected_marketplace="$MARKETPLACE_ECLIPSE"
+            # Set marketplace for this extension
+            set_marketplace "$MARKETPLACE_ECLIPSE"
+        else
+            error "Unable to extract extension ID from URL: $input"
+            return 1
+        fi
+        
+        if [[ -z "$extension_id" ]]; then
+            error "Failed to extract extension ID from URL"
+            return 1
+        fi
+        
+        # Validate the extracted ID (skip for Eclipse as it has different format)
+        if [[ "$detected_marketplace" != "$MARKETPLACE_ECLIPSE" ]] && ! validate_extension_id_format "$extension_id"; then
+            error "Extracted extension ID is invalid: $extension_id"
+            return 1
+        fi
+        
+        # Output the extension ID and detected marketplace info in verbose mode
+        if [[ "$VERBOSE" == true && -n "$detected_marketplace" ]]; then
+            verbose "Detected marketplace: $(get_marketplace_name "$detected_marketplace")"
+        fi
+        
+        EXTRACTED_EXTENSION_ID="$extension_id"
+        return 0
+    else
+        # Direct extension ID - validate format
+        if ! validate_extension_id_format "$input"; then
+            return 1
+        fi
+        EXTRACTED_EXTENSION_ID="$input"
+        return 0
+    fi
+}
+
+# Function to validate extension ID (wrapper for backward compatibility)
+validate_extension_id() {
+    local input="$1"
+    local extracted_id
+    
+    if ! extracted_id=$(extract_extension_id "$input"); then
+        return 1
+    fi
+    
+    # For backward compatibility, we don't echo the result here
+    return 0
+}
+
+# Function to get download URL based on marketplace
+get_download_url() {
+    local publisher="$1"
+    local name="$2"
+    local version="$3"
+    local marketplace="${4:-$(get_current_marketplace)}"
+    
+    case "$marketplace" in
+        "$MARKETPLACE_OPENVSX")
+            # Open VSX download URL
+            if [[ -n "$version" ]]; then
+                echo "$OPENVSX_BASE_URL/api/$publisher/$name/$version/file/$publisher.$name-$version.vsix"
+            else
+                echo "$OPENVSX_BASE_URL/api/$publisher/$name/latest/file/$publisher.$name.vsix"
+            fi
+            ;;
+        "$MARKETPLACE_CODER")
+            # Coder Marketplace download URL
+            if [[ -n "$version" ]]; then
+                echo "$CODER_MARKETPLACE_BASE_URL/api/$publisher/$name/$version/file/$publisher.$name-$version.vsix"
+            else
+                echo "$CODER_MARKETPLACE_BASE_URL/api/$publisher/$name/latest/file/$publisher.$name.vsix"
+            fi
+            ;;
+        "$MARKETPLACE_ECLIPSE")
+            # Eclipse Marketplace download URL (simplified implementation)
+            # Note: Eclipse marketplace has different API structure
+            warning "Eclipse Marketplace support is experimental"
+            local content_name="${publisher}-${name}"
+            echo "$ECLIPSE_MARKETPLACE_BASE_URL/node/${content_name}/api/p"
+            ;;
+        "$MARKETPLACE_OFFICIAL"|*)
+            # Official VS Code Marketplace URL
+            if [[ -n "$version" ]]; then
+                echo "https://$publisher.gallery.vsassets.io/_apis/public/gallery/publisher/$publisher/extension/$name/$version/assetbyname/Microsoft.VisualStudio.Services.VSIXPackage"
+            else
+                echo "https://$publisher.gallery.vsassets.io/_apis/public/gallery/publisher/$publisher/extension/$name/latest/assetbyname/Microsoft.VisualStudio.Services.VSIXPackage"
+            fi
+            ;;
+    esac
+}
+
+# Function to extract extension ID and determine marketplace
+extract_extension_id_with_marketplace() {
+    local input="$1"
+    local use_openvsx=false
+    local use_coder=false
+    local use_eclipse=false
+    
+    # Check if input is a URL and extract marketplace info
+    if [[ "$input" =~ ^https?:// ]]; then
+        if [[ "$input" =~ open-vsx\.org ]]; then
+            use_openvsx=true
+        elif [[ "$input" =~ extensions\.coder\.com ]]; then
+            use_coder=true
+        elif [[ "$input" =~ marketplace\.eclipse\.org ]]; then
+            use_eclipse=true
+        fi
+    fi
+    
+    # Extract the extension ID
+    local extension_id
+    if ! extension_id=$(extract_extension_id "$input"); then
+        return 1
+    fi
+    
+    # Return both the extension ID and marketplace flags
+    echo "$extension_id"
+    
+    # Set global marketplace flags if detected from URL
+    if [[ "$use_openvsx" == true ]]; then
+        set_marketplace "$MARKETPLACE_OPENVSX"
+    elif [[ "$use_coder" == true ]]; then
+        set_marketplace "$MARKETPLACE_CODER"
+    elif [[ "$use_eclipse" == true ]]; then
+        set_marketplace "$MARKETPLACE_ECLIPSE"
+    fi
+    
+    return 0
+}
+
+
+
+
+
+
+
+# Function to read extensions from stdin
+read_extensions_from_stdin() {
+    local extensions=()
+    
+    # Check if there's input available on stdin
+    if [[ ! -t 0 ]]; then
+        # Read from stdin
+        while IFS= read -r line; do
+            # Skip empty lines and comments
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            
+            # Split line into words and add to extensions array
+            read -ra words <<< "$line"
+            for word in "${words[@]}"; do
+                [[ -n "$word" ]] && extensions+=("$word")
+            done
+        done
+        
+        if [[ ${#extensions[@]} -gt 0 ]] && [[ "$QUIET" == false ]]; then
+            info "Read ${#extensions[@]} extensions from stdin" >&2
+        fi
+    fi
+    
+    # Output the extensions array
+    printf '%s\n' "${extensions[@]}"
+}
+
+# Function to check for updates
+check_for_updates() {
+  local quiet_mode="${1:-false}"
+
+  if [[ "$quiet_mode" == false ]]; then
+    info "Checking for updates..."
+  fi
+
+  # Try to get latest version from GitHub API
+  local latest_version=""
+  if command -v curl >/dev/null 2>&1; then
+    latest_version=$(curl -s "$VERSION_CHECK_URL" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | sed 's/^v//')
+  elif command -v wget >/dev/null 2>&1; then
+    latest_version=$(wget -qO- "$VERSION_CHECK_URL" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | sed 's/^v//')
+  fi
+
+  if [[ -z "$latest_version" ]]; then
+    if [[ "$quiet_mode" == false ]]; then
+      warning "Could not check for updates (network issue or API unavailable)"
+    fi
+    return 1
+  fi
+
+  if [[ "$quiet_mode" == false ]]; then
+    info "Current version: $SCRIPT_VERSION"
+    info "Latest version: $latest_version"
+  fi
+
+  # Simple version comparison (assuming semantic versioning)
+  if [[ "$SCRIPT_VERSION" != "$latest_version" ]]; then
+    if [[ "$quiet_mode" == false ]]; then
+      info "Update available: $SCRIPT_VERSION -> $latest_version"
+    fi
+    return 0 # Update available
+  else
+    if [[ "$quiet_mode" == false ]]; then
+      success "Already up to date!"
+    fi
+    return 2 # Already up to date
+  fi
+}
+
+# Function to perform self-update
+self_update() {
+  local force_update="${1:-false}"
+  local auto_yes="${2:-false}"
+
+  # Check if script is writable
+  if [[ ! -w "$0" ]]; then
+    error "Cannot update script: $0 is not writable"
+    echo "Try running with sudo or check file permissions"
+    return 1
+  fi
+
+  # Check for updates unless forced
+  if [[ "$force_update" == false ]]; then
+    check_for_updates true
+    local check_result=$?
+
+    if [[ $check_result -eq 1 ]]; then
+      error "Could not check for updates"
+      return 1
+    elif [[ $check_result -eq 2 ]]; then
+      success "Already up to date!"
+      return 0
+    fi
+  fi
+
+  info "Downloading latest version..."
+
+  # Create backup
+  local backup_file
+  backup_file="${0}.backup.$(date +%s)"
+  if ! cp "$0" "$backup_file"; then
+    error "Failed to create backup"
+    return 1
+  fi
+  info "Created backup: $backup_file"
+
+  # Download new version
+  local temp_script="$MAIN_TEMP_DIR/download-vsix-new"
+
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -L --fail --silent --show-error "$UPDATE_URL" -o "$temp_script"; then
+      error "Failed to download update"
+      rm -f "$backup_file"
+      return 1
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if ! wget --quiet --output-document="$temp_script" "$UPDATE_URL"; then
+      error "Failed to download update"
+      rm -f "$backup_file"
+      return 1
+    fi
+  else
+    error "Neither curl nor wget available for update"
+    rm -f "$backup_file"
+    return 1
+  fi
+
+  # Verify the downloaded script
+  if [[ ! -s "$temp_script" ]]; then
+    error "Downloaded file is empty"
+    rm -f "$backup_file"
+    return 1
+  fi
+
+  # Check if it's a valid shell script
+  if ! head -1 "$temp_script" | grep -q "^#!/"; then
+    error "Downloaded file doesn't appear to be a valid script"
+    rm -f "$backup_file"
+    return 1
+  fi
+
+  # Make it executable
+  chmod +x "$temp_script"
+
+  # Prompt for confirmation unless auto-yes
+  if [[ "$auto_yes" == false ]]; then
+    printf "Replace current script with new version? (y/N): "
+    if command -v read >/dev/null 2>&1; then
+      if read -t 30 -n 1 -r response 2>/dev/null; then
+        printf "\n"
+      else
+        read -r response
+      fi
+    else
+      response=$(head -c 1)
+    fi
+
+    case "$response" in
+    [Yy]*)
+      info "Proceeding with update..."
+      ;;
+    *)
+      info "Update cancelled"
+      rm -f "$backup_file"
+      return 0
+      ;;
+    esac
+  fi
+
+  # Replace the script
+  if ! mv "$temp_script" "$0"; then
+    error "Failed to replace script"
+    info "Restoring backup..."
+    mv "$backup_file" "$0"
+    return 1
+  fi
+
+  success "Script updated successfully!"
+  info "Backup saved as: $backup_file"
+  info "You can remove the backup with: rm $backup_file"
+
+  # Show new version
+  local new_version
+  new_version=$("$0" version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
+  info "New version: $new_version"
+
+  return 0
+}
+
+# Temporary directories for cleanup
+TEMP_DIRS=()
+MAIN_TEMP_DIR=""
+
+# Function to print colored output
+error() {
+  printf "${RED}ERROR: %s${NC}\n" "$1" >&2
+}
+
+success() {
+  [[ "$QUIET" == false ]] && printf "${GREEN}SUCCESS: %s${NC}\n" "$1"
+}
+
+warning() {
+  [[ "$QUIET" == false ]] && printf "${YELLOW}WARNING: %s${NC}\n" "$1"
+}
+
+info() {
+  [[ "$QUIET" == false ]] && printf "%s\n" "$1"
+}
+
+# Verbose-only output (only shown with --verbose flag)
+verbose() {
+  [[ "$VERBOSE" == true && "$QUIET" == false ]] && printf "${BLUE}VERBOSE: %s${NC}\n" "$1" >&2
+  return 0
+}
+
+# Minimal output (shown by default unless --quiet, but not in verbose mode unless --verbose)
+minimal() {
+  [[ "$QUIET" == false ]] && printf "%s\n" "$1"
+  return 0
+}
+
+# Function to show version
+show_version() {
+  echo "$SCRIPT_NAME $SCRIPT_VERSION"
+  echo "$SCRIPT_DESCRIPTION"
+  exit 0
+}
+
+# Function to show main help
+show_help() {
+  cat <<EOF
+$SCRIPT_NAME $SCRIPT_VERSION
+$SCRIPT_DESCRIPTION
+
+USAGE:
+    $SCRIPT_NAME <command> [options] [arguments]
+
+COMMANDS:
+    search <term>                Search for extensions matching the term
+    info <extension-id-or-url>   Show extension information
+    download <ext-id-or-url>...  Download extension(s) to local file(s)
+    install <ext-id-or-url>...   Download and install extension(s) to editor(s)
+    config [get|set|reset]       Manage configuration settings
+    update                       Update this script to the latest version
+    help [command]               Show help for a specific command
+    version                      Show version information
+
+GLOBAL OPTIONS:
+    -q, --quiet                  Suppress non-error output
+    -V, --verbose                Show detailed output
+    -y, --yes                    Automatically answer yes to prompts (non-interactive mode)
+    -c, --no-color               Disable colored output
+    -m, --marketplace MARKETPLACE Use specific marketplace (official, openvsx, coder, eclipse)
+                                 Default: official
+    -h, --help                   Show this help message
+
+EXAMPLES:
+    # Search for Python extensions
+    $SCRIPT_NAME search python
+
+    # Show extension information (ID or URL)
+    $SCRIPT_NAME info ms-python.python
+    $SCRIPT_NAME info "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+
+    # Download extension to current directory
+    $SCRIPT_NAME download ms-python.python
+    $SCRIPT_NAME download "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+
+    # Download from Open VSX Registry
+    $SCRIPT_NAME download --marketplace openvsx ms-python.python
+    $SCRIPT_NAME download "https://open-vsx.org/extension/ms-python/python"
+
+    # Download from Coder Marketplace
+    $SCRIPT_NAME download --marketplace coder ms-python.python
+    $SCRIPT_NAME download "https://extensions.coder.com/extension/ms-python/python"
+
+    # Download from Eclipse Marketplace
+    $SCRIPT_NAME download --marketplace eclipse extension-name
+
+    # Download multiple extensions to specific directory
+    $SCRIPT_NAME download --output ~/extensions/ ms-python.python github.copilot
+
+    # Install extension to Cursor
+    $SCRIPT_NAME install --editors cursor ms-python.python
+    $SCRIPT_NAME install --editors cursor "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+
+    # Install to multiple editors
+    $SCRIPT_NAME install --editors cursor,vscode ms-python.python
+
+    # Install from stdin (pipe extensions)
+    echo "ms-python.python github.copilot" | $SCRIPT_NAME download
+    cat extensions.txt | $SCRIPT_NAME install --editors cursor
+
+    # Disable colors
+    $SCRIPT_NAME download --no-color ms-python.python
+
+    # Update the script
+    $SCRIPT_NAME update
+
+    # Get help for a specific command
+    $SCRIPT_NAME help download
+
+For detailed help on a specific command, use: $SCRIPT_NAME help <command>
+
+EOF
+  exit 0
+}
+
+# Function to show command-specific help
+show_command_help() {
+  local command="$1"
+
+  case "$command" in
+  search)
+    cat <<EOF
+$SCRIPT_NAME search - Search for extensions
+
+USAGE:
+    $SCRIPT_NAME search [options] <search-term>
+
+OPTIONS:
+    -h, --help            Show help for the search command
+    -q, --quiet           Suppress non-error output
+    -V, --verbose         Show detailed output
+    -l, --limit N         Limit results to N extensions (default: 10)
+    -m, --marketplace MARKETPLACE Use specific marketplace (official, openvsx, coder, eclipse)
+
+EXAMPLES:
+    $SCRIPT_NAME search python
+    $SCRIPT_NAME search --limit 5 "code formatter"
+
+EOF
+    ;;
+          info)
+            cat <<EOF
+$SCRIPT_NAME info - Show extension information
+
+USAGE:
+    $SCRIPT_NAME info [options] <extension-id-or-url>
+
+OPTIONS:
+    -h, --help            Show help for the info command
+    -q, --quiet           Suppress non-error output
+    -V, --verbose         Show detailed output
+    -v, --version VERSION Show info for specific version
+    -m, --marketplace MARKETPLACE Use specific marketplace (official, openvsx, coder, eclipse)
+
+EXAMPLES:
+    $SCRIPT_NAME info ms-python.python
+    $SCRIPT_NAME info "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+    $SCRIPT_NAME info --version 2021.5.842923320 ms-python.python
+
+SUPPORTED URL FORMATS:
+    - https://marketplace.visualstudio.com/items?itemName=publisher.name
+    - https://marketplace.visualstudio.com/items/publisher.name
+    - https://open-vsx.org/extension/publisher/name
+    - https://extensions.coder.com/extension/publisher/name
+    - https://marketplace.eclipse.org/content/extension-name
+
+EOF
+    ;;
+          download)
+            cat <<EOF
+$SCRIPT_NAME download - Download extension(s) to local file(s)
+
+USAGE:
+    $SCRIPT_NAME download [options] <ext-id-or-url> [ext-id-or-url2] ...
+    echo "ext1 ext2" | $SCRIPT_NAME download [options]
+
+OPTIONS:
+    -h, --help            Show help for the download command
+    -q, --quiet           Suppress non-error output
+    -V, --verbose         Show detailed output
+    -y, --yes             Automatically answer yes to prompts
+    -p, --no-progress     Disable progress indicators for downloads
+    -d, --dry-run         Show what would be done without actually doing it
+    -c, --no-color        Disable colored output
+    -m, --marketplace MARKETPLACE Use specific marketplace (official, openvsx, coder, eclipse)
+    -v, --version VERSION Download specific version of extension
+    -o, --output PATH     Output directory or file path (default: current directory)
+
+EXAMPLES:
+    $SCRIPT_NAME download ms-python.python
+    $SCRIPT_NAME download "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+    $SCRIPT_NAME download --marketplace openvsx ms-python.python
+    $SCRIPT_NAME download --output ~/extensions/ ms-python.python github.copilot
+    $SCRIPT_NAME download --version 2021.5.842923320 ms-python.python
+    $SCRIPT_NAME download --dry-run ms-python.python
+    echo "ms-python.python github.copilot" | $SCRIPT_NAME download
+
+SUPPORTED VERSION FORMATS:
+    $SCRIPT_NAME download ms-python.python@2021.5.842923320
+    $SCRIPT_NAME download --version 2021.5.842923320 ms-python.python
+
+SUPPORTED URL FORMATS:
+    - https://marketplace.visualstudio.com/items?itemName=publisher.name
+    - https://marketplace.visualstudio.com/items/publisher.name
+    - https://open-vsx.org/extension/publisher/name
+    - https://extensions.coder.com/extension/publisher/name
+    - https://marketplace.eclipse.org/content/extension-name
+
+SUPPORTED MARKETPLACES:
+    - VS Code Marketplace (default): Official Microsoft marketplace
+    - Open VSX Registry: Open-source alternative marketplace
+    - Coder Marketplace: Open-source marketplace for code-server
+    - Eclipse Marketplace: Eclipse Foundation marketplace (experimental)
+
+EOF
+    ;;
+          install)
+            cat <<EOF
+$SCRIPT_NAME install - Download and install extension(s) to editor(s)
+
+USAGE:
+    $SCRIPT_NAME install [options] <ext-id-or-url> [ext-id-or-url2] ...
+    echo "ext1 ext2" | $SCRIPT_NAME install [options]
+
+OPTIONS:
+    -h, --help            Show help for the install command
+    -q, --quiet           Suppress non-error output
+    -V, --verbose         Show detailed output
+    -y, --yes             Automatically answer yes to prompts
+    -p, --no-progress     Disable progress indicators for downloads
+    -d, --dry-run         Show what would be done without actually doing it
+    -c, --no-color        Disable colored output
+    -m, --marketplace MARKETPLACE Use specific marketplace (official, openvsx, coder, eclipse)
+    -v, --version VERSION Install specific version of extension
+    -o, --output PATH     Output directory for downloaded files (default: temp)
+    -e, --editors EDITORS Comma-separated list of editors to install to
+                          Available: cursor, windsurf, trae, vscodium, vscode, all
+                          Default: cursor
+
+EXAMPLES:
+    $SCRIPT_NAME install ms-python.python
+    $SCRIPT_NAME install "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+    $SCRIPT_NAME install --marketplace openvsx ms-python.python
+    $SCRIPT_NAME install --editors cursor ms-python.python
+    $SCRIPT_NAME install --editors cursor,vscode ms-python.python
+    $SCRIPT_NAME install --editors all ms-python.python
+    $SCRIPT_NAME install --dry-run --editors all ms-python.python
+    echo "ms-python.python github.copilot" | $SCRIPT_NAME install --editors cursor
+
+SUPPORTED URL FORMATS:
+    - https://marketplace.visualstudio.com/items?itemName=publisher.name
+    - https://marketplace.visualstudio.com/items/publisher.name
+    - https://open-vsx.org/extension/publisher/name
+    - https://extensions.coder.com/extension/publisher/name
+    - https://marketplace.eclipse.org/content/extension-name
+
+SUPPORTED MARKETPLACES:
+    - VS Code Marketplace (default): Official Microsoft marketplace
+    - Open VSX Registry: Open-source alternative marketplace
+    - Coder Marketplace: Open-source marketplace for code-server
+    - Eclipse Marketplace: Eclipse Foundation marketplace (experimental)
+
+EOF
+    ;;
+  config)
+    cat <<EOF
+$SCRIPT_NAME config - Manage configuration settings
+
+USAGE:
+    $SCRIPT_NAME config [get|set|reset] [key] [value]
+
+SUBCOMMANDS:
+    get [key]       Show configuration (all settings or specific key)
+    set <key> <val> Set configuration value
+    reset           Delete configuration file and reset to defaults
+
+CONFIGURATION KEYS:
+    default_marketplace   Default marketplace (official, openvsx, coder, eclipse)
+    default_editors       Default editors for install (comma-separated)
+    show_progress         Show progress indicators (true/false)
+    auto_yes             Auto-answer yes to prompts (true/false)
+    no_color             Disable colored output (true/false)
+
+EXAMPLES:
+    # Show all configuration
+    $SCRIPT_NAME config get
+    
+    # Show specific setting
+    $SCRIPT_NAME config get default_marketplace
+    
+    # Set default marketplace
+    $SCRIPT_NAME config set default_marketplace openvsx
+    
+    # Set default editors
+    $SCRIPT_NAME config set default_editors "cursor,vscode"
+    
+    # Disable progress indicators
+    $SCRIPT_NAME config set show_progress false
+    
+    # Reset all configuration
+    $SCRIPT_NAME config reset
+
+CONFIGURATION FILE:
+The configuration is stored in: \${XDG_CONFIG_HOME:-\$HOME/.config}/vsix-cli/config
+
+Settings in the configuration file are used as defaults but can be overridden
+by command-line options.
+
+EOF
+    ;;
+  update)
+    cat <<EOF
+$SCRIPT_NAME update - Update this script to the latest version
+
+USAGE:
+    $SCRIPT_NAME update [options]
+
+OPTIONS:
+    -q, --quiet           Suppress non-error output
+    -y, --yes             Automatically answer yes to prompts
+    --check               Only check for updates, don't install
+    --force               Force update even if already up to date
+
+EXAMPLES:
+    $SCRIPT_NAME update
+    $SCRIPT_NAME update --check
+    $SCRIPT_NAME update --force
+
+EOF
+    ;;
+  *)
+    error "Unknown command: $command"
+    echo "Use '$SCRIPT_NAME help' to see available commands."
+    exit 1
+    ;;
+  esac
+  exit 0
+}
+
+# Function to get extension information from marketplace
+get_extension_info() {
+  local extension_id="$1"
+  local version="$2"
+
+  local publisher=$(echo "$extension_id" | cut -d '.' -f 1)
+  local name=$(echo "$extension_id" | cut -d '.' -f 2)
+
+  info "Fetching extension information..."
+
+  # VS Code Marketplace API
+  local api_url="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
+  local version_filter=""
+
+  if [[ -n "$version" ]]; then
+    version_filter='"version":"'$version'",'
+  fi
+
+  local json_payload='{
+        "filters": [{
+            "criteria": [
+                {"filterType": 7, "value": "Microsoft.VisualStudio.Code"},
+                {"filterType": 12, "value": "37888"}
+            ],
+            "pageNumber": 1,
+            "pageSize": 1,
+            "sortBy": 0,
+            "sortOrder": 0
+        }],
+        "assetTypes": ["Microsoft.VisualStudio.Services.Icons.Default", "Microsoft.VisualStudio.Code.Manifest", "Microsoft.VisualStudio.Services.VsixManifest"],
+        "flags": 914
+    }'
+
+  # Try to get extension info via API (simplified approach)
+  local info_url="https://$publisher.gallery.vsassets.io/_apis/public/gallery/publisher/$publisher/extension/$name"
+  if [[ -n "$version" ]]; then
+    info_url="$info_url/$version"
+  else
+    info_url="$info_url/latest"
+  fi
+
+  local response
+  if command -v curl >/dev/null 2>&1; then
+    response=$(curl -s "$info_url/assetbyname/Microsoft.VisualStudio.Code.Manifest" 2>/dev/null || echo "")
+  elif command -v wget >/dev/null 2>&1; then
+    response=$(wget -qO- "$info_url/assetbyname/Microsoft.VisualStudio.Code.Manifest" 2>/dev/null || echo "")
+  fi
+
+  if [[ -n "$response" ]] && command -v jq >/dev/null 2>&1; then
+    echo "$response" | jq -r '
+            "Extension ID: " + .publisher + "." + .name + "\n" +
+            "Display Name: " + .displayName + "\n" +
+            "Version: " + .version + "\n" +
+            "Description: " + .description + "\n" +
+            "Publisher: " + .publisher + "\n" +
+            "Categories: " + (.categories // [] | join(", ")) + "\n" +
+            "Tags: " + (.keywords // [] | join(", "))'
+    return 0
+  fi
+
+  # Fallback: show basic info we can determine
+  echo "Extension ID: $extension_id"
+  echo "Publisher: $publisher"
+  echo "Name: $name"
+  if [[ -n "$version" ]]; then
+    echo "Requested Version: $version"
+  else
+    echo "Version: latest"
+  fi
+  echo "Download URL: https://$publisher.gallery.vsassets.io/_apis/public/gallery/publisher/$publisher/extension/$name/latest/assetbyname/Microsoft.VisualStudio.Services.VSIXPackage"
+}
+
+# Function to search for extensions
+search_extensions() {
+  local search_term="$1"
+
+  info "Searching for extensions matching: $search_term"
+
+  # VS Code Marketplace search API
+  local search_url="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
+
+  local json_payload='{
+        "filters": [{
+            "criteria": [
+                {"filterType": 8, "value": "Microsoft.VisualStudio.Code"},
+                {"filterType": 10, "value": "'$search_term'"},
+                {"filterType": 12, "value": "37888"}
+            ],
+            "pageNumber": 1,
+            "pageSize": 10,
+            "sortBy": 0,
+            "sortOrder": 0
+        }],
+        "assetTypes": [],
+        "flags": 914
+    }'
+
+  local response
+  if command -v curl >/dev/null 2>&1; then
+    response=$(curl -s -X POST "$search_url" \
+      -H "Content-Type: application/json" \
+      -H "Accept: application/json;api-version=3.0-preview.1" \
+      -d "$json_payload" 2>/dev/null)
+  elif command -v wget >/dev/null 2>&1; then
+    response=$(wget -qO- --post-data="$json_payload" \
+      --header="Content-Type: application/json" \
+      --header="Accept: application/json;api-version=3.0-preview.1" \
+      "$search_url" 2>/dev/null)
+  fi
+
+  if [[ -n "$response" ]] && command -v jq >/dev/null 2>&1; then
+    echo "$response" | jq -r '
+            .results[0].extensions[] | 
+            .publisher.publisherName + "." + .extensionName + " - " + .displayName + "\n" +
+            "  Description: " + .shortDescription + "\n" +
+            "  Version: " + .versions[0].version + "\n" +
+            "  Downloads: " + (.statistics[] | select(.statisticName=="install").value | tostring) + "\n"'
+    return 0
+  fi
+
+  warning "Search functionality requires 'jq' and internet connectivity"
+  echo "You can search manually at: https://marketplace.visualstudio.com/vscode"
+  echo "Search term: $search_term"
+  return 1
+}
+
+# Function to download with progress indicator
+download_with_progress() {
+  local url="$1"
+  local output_file="$2"
+
+  local download_success=false
+
+  if command -v curl >/dev/null 2>&1; then
+    info "Using curl for download..."
+    if [[ "$SHOW_PROGRESS" == true && "$QUIET" == false ]]; then
+      # Show progress bar
+      if curl -L --fail --progress-bar "$url" -o "$output_file"; then
+        download_success=true
+      fi
+    else
+      # Silent download
+      if curl -L --fail --silent --show-error "$url" -o "$output_file"; then
+        download_success=true
+      fi
+    fi
+
+    if [[ "$download_success" == false ]]; then
+      warning "curl download failed, trying wget..."
+    fi
+  fi
+
+  if [[ "$download_success" == false ]] && command -v wget >/dev/null 2>&1; then
+    info "Using wget for download..."
+    if [[ "$SHOW_PROGRESS" == true && "$QUIET" == false ]]; then
+      # Show progress bar
+      if wget --progress=bar:force "$url" -O "$output_file"; then
+        download_success=true
+      fi
+    else
+      # Silent download
+      if wget --quiet --output-document="$output_file" "$url"; then
+        download_success=true
+      fi
+    fi
+
+    if [[ "$download_success" == false ]]; then
+      warning "wget download failed"
+    fi
+  fi
+
+  if [[ "$download_success" == false ]]; then
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+      error "Neither curl nor wget is available. Please install one of them."
+      exit $EXIT_MISSING_DEPENDENCIES
+    else
+      error "Failed to download extension. Please check if the extension ID is correct."
+      exit $EXIT_DOWNLOAD_FAILED
+    fi
+  fi
+}
+
+# Function to process a single extension (used by batch processing)
+process_single_extension() {
+  local ext_id="$1"
+  local ext_version="$2"
+  local custom_output_dir="$3"
+  local use_openvsx="${4:-$USE_OPEN_VSX}"
+
+  # Validate extension ID format
+  if ! validate_extension_id "$ext_id"; then
+    return 1
+  fi
+
+  # Extract publisher and name
+  local publisher=$(echo "$ext_id" | cut -d '.' -f 1)
+  local name=$(echo "$ext_id" | cut -d '.' -f 2)
+
+  # Determine output directory
+  if [[ -n "$custom_output_dir" ]]; then
+    local output_dir="$custom_output_dir"
+  else
+    local output_dir="$(pwd)"
+  fi
+
+  # Create output directory if it doesn't exist
+  if [[ ! -d "$output_dir" ]]; then
+    if ! mkdir -p "$output_dir"; then
+      error "Failed to create output directory: $output_dir"
+      return 1
+    fi
+    info "Created output directory: $output_dir"
+  fi
+
+  # Create temporary file for download
+  local temp_file="$MAIN_TEMP_DIR/batch_${ext_id}.vsix"
+
+  # Construct download URL based on marketplace
+  local downloadUrl
+  downloadUrl=$(get_download_url "$publisher" "$name" "$ext_version")
+  
+  # Show marketplace being used
+  local current_marketplace=$(get_current_marketplace)
+  local marketplace_name=$(get_marketplace_name "$current_marketplace")
+  info "Using marketplace: $marketplace_name"
+
+  # Download the extension (unless dry run)
+  if [[ "$DRY_RUN" == false ]]; then
+    info "Downloading from: $downloadUrl"
+    download_with_progress "$downloadUrl" "$temp_file"
+  else
+    info "Would download from: $downloadUrl"
+  fi
+
+  # Extract version from manifest if not specified
+  local version="$ext_version"
+  if [[ "$DRY_RUN" == false ]]; then
+    if [[ -z "$version" ]]; then
+      version=$(unzip -p "$temp_file" extension.vsixmanifest 2>/dev/null | sed -n 's/.*<Identity[^>]*Version="\([^"]*\)".*/\1/p' | head -n1)
+      if [[ -z "$version" ]]; then
+        version="unknown"
+      fi
+    fi
+  else
+    if [[ -z "$version" ]]; then
+      version="latest"
+    fi
+  fi
+
+  # Determine final filename
+  local final_file="${output_dir%/}/${ext_id}-${version}.vsix"
+
+  # Move file to final location (unless dry run)
+  if [[ "$DRY_RUN" == false ]]; then
+    if ! mv "$temp_file" "$final_file"; then
+      error "Failed to move file to final location: $final_file"
+      return 1
+    fi
+    success "Downloaded: $ext_id ($version)"
+  else
+    success "Would download: $ext_id ($version) to $final_file"
+  fi
+
+  # Install to editors if requested
+  if [[ "$INSTALL_TO_CURSOR" == true || "$INSTALL_TO_WINDSURF" == true || "$INSTALL_TO_TRAE" == true || "$INSTALL_TO_VSCODIUM" == true || "$INSTALL_TO_VSCODE" == true ]]; then
+    if [[ "$DRY_RUN" == false ]]; then
+      local install_failed=false
+
+      [[ "$INSTALL_TO_CURSOR" == true ]] && ! install_to_cursor "$final_file" && install_failed=true
+      [[ "$INSTALL_TO_WINDSURF" == true ]] && ! install_to_windsurf "$final_file" && install_failed=true
+      [[ "$INSTALL_TO_TRAE" == true ]] && ! install_to_trae "$final_file" && install_failed=true
+      [[ "$INSTALL_TO_VSCODIUM" == true ]] && ! install_to_vscodium "$final_file" && install_failed=true
+      [[ "$INSTALL_TO_VSCODE" == true ]] && ! install_to_vscode "$final_file" && install_failed=true
+
+      if [[ "$install_failed" == true ]]; then
+        warning "Some installations failed for $ext_id"
+      fi
+    else
+      # Dry run mode - show what would be installed
+      local requested_editors=()
+      while IFS= read -r editor; do
+          requested_editors+=("$editor")
+      done < <(get_requested_editors)
+      local install_list=()
+
+      for editor in "${requested_editors[@]}"; do
+        local editor_name=$(get_editor_display_name "$editor")
+        install_list+=("$editor_name")
+      done
+
+      info "Would install extension to: ${install_list[*]}"
+    fi
+  fi
+
+  return 0
+}
+
+# Function to get editor CLI command
+get_editor_cli_command() {
+  local editor_key="$1"
+  case "$editor_key" in
+  cursor) echo "cursor" ;;
+  windsurf) echo "windsurf" ;;
+  trae) echo "trae" ;;
+  vscodium) echo "codium" ;;
+  vscode) echo "code" ;;
+  *) echo "" ;;
+  esac
+}
+
+# Function to get editor display name
+get_editor_display_name() {
+  local editor_key="$1"
+  case "$editor_key" in
+  cursor) echo "Cursor" ;;
+  windsurf) echo "Windsurf" ;;
+  trae) echo "Trae" ;;
+  vscodium) echo "VS Codium" ;;
+  vscode) echo "VS Code" ;;
+  *) echo "$editor_key" ;;
+  esac
+}
+
+# Function to get editor extensions directory
+get_editor_extensions_dir() {
+  local editor_key="$1"
+  local extensions_subdir
+
+  case "$editor_key" in
+  cursor) extensions_subdir=".cursor/extensions" ;;
+  windsurf) extensions_subdir=".windsurf/extensions" ;;
+  trae) extensions_subdir=".trae/extensions" ;;
+  vscodium) extensions_subdir=".vscode-oss/extensions" ;;
+  vscode) extensions_subdir=".vscode/extensions" ;;
+  *)
+    echo ""
+    return 1
+    ;;
+  esac
+
+  case "$MACHINE" in
+  Windows)
+    if [[ -n "${USERPROFILE:-}" ]]; then
+      echo "$USERPROFILE/$extensions_subdir"
+    else
+      echo "$HOME/$extensions_subdir"
+    fi
+    ;;
+  *)
+    echo "$HOME/$extensions_subdir"
+    ;;
+  esac
+}
+
+# Generic function to install extension to any editor
+install_to_editor() {
+  local vsix_file="$1"
+  local editor_key="$2"
+
+  local cli_command=$(get_editor_cli_command "$editor_key")
+  local editor_name=$(get_editor_display_name "$editor_key")
+
+  if [[ -z "$cli_command" ]]; then
+    error "Unknown editor: $editor_key"
+    return 1
+  fi
+
+  info "Installing extension to $editor_name..."
+
+  # Method 1: Try CLI first
+  if command -v "$cli_command" >/dev/null 2>&1; then
+    info "Using $editor_name CLI to install extension..."
+    if "$cli_command" --install-extension "$vsix_file" >/dev/null 2>&1; then
+      success "Extension installed to $editor_name via CLI"
+      return 0
+    else
+      warning "$editor_name CLI installation failed, trying manual installation..."
+    fi
+  fi
+
+  # Method 2: Manual installation
+  local extensions_dir=$(get_editor_extensions_dir "$editor_key")
+  install_extension_manually "$vsix_file" "$extensions_dir" "$editor_name"
+}
+
+# Wrapper functions for backward compatibility
+install_to_cursor() {
+  install_to_editor "$1" "cursor"
+}
+
+install_to_windsurf() {
+  install_to_editor "$1" "windsurf"
+}
+
+install_to_trae() {
+  install_to_editor "$1" "trae"
+}
+
+install_to_vscodium() {
+  install_to_editor "$1" "vscodium"
+}
+
+install_to_vscode() {
+  install_to_editor "$1" "vscode"
+}
+
+# Generic function to install extension manually to any editor
+install_extension_manually() {
+  local vsix_file="$1"
+  local extensions_dir="$2"
+  local editor_name="$3"
+
+  # Create extensions directory if it doesn't exist
+  if [[ ! -d "$extensions_dir" ]]; then
+    if ! mkdir -p "$extensions_dir"; then
+      error "Failed to create $editor_name extensions directory: $extensions_dir"
+      return 1
+    fi
+    info "Created $editor_name extensions directory: $extensions_dir"
+  fi
+
+  # Extract extension to temporary directory
+  local temp_extract_dir="$MAIN_TEMP_DIR/${editor_name,,}_ext_install"
+  mkdir -p "$temp_extract_dir"
+
+  # Extract the VSIX file
+  if ! unzip -q "$vsix_file" -d "$temp_extract_dir"; then
+    error "Failed to extract VSIX file for $editor_name installation"
+    rm -rf "$temp_extract_dir"
+    return 1
+  fi
+
+  # Read package.json to get extension info
+  local package_json="$temp_extract_dir/extension/package.json"
+  if [[ ! -f "$package_json" ]]; then
+    error "Invalid VSIX file: missing package.json"
+    rm -rf "$temp_extract_dir"
+    return 1
+  fi
+
+  # Extract publisher and name from package.json (basic parsing)
+  local ext_publisher ext_name ext_version
+  if command -v jq >/dev/null 2>&1; then
+    # Use jq if available
+    ext_publisher=$(jq -r '.publisher // empty' "$package_json")
+    ext_name=$(jq -r '.name // empty' "$package_json")
+    ext_version=$(jq -r '.version // empty' "$package_json")
+  else
+    # Fallback to basic parsing
+    ext_publisher=$(grep -o '"publisher"[[:space:]]*:[[:space:]]*"[^"]*"' "$package_json" | sed 's/.*"publisher"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    ext_name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$package_json" | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    ext_version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$package_json" | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  fi
+
+  if [[ -z "$ext_publisher" || -z "$ext_name" || -z "$ext_version" ]]; then
+    error "Failed to extract extension information from package.json"
+    rm -rf "$temp_extract_dir"
+    return 1
+  fi
+
+  # Create extension directory name
+  local ext_dir_name="${ext_publisher}.${ext_name}-${ext_version}"
+  local target_ext_dir="$extensions_dir/$ext_dir_name"
+
+  # Remove existing version if it exists
+  if [[ -d "$target_ext_dir" ]]; then
+    warning "Removing existing version in $editor_name: $target_ext_dir"
+    rm -rf "$target_ext_dir"
+  fi
+
+  # Move extension to editor extensions directory
+  if mv "$temp_extract_dir/extension" "$target_ext_dir"; then
+    success "Extension installed to $editor_name manually: $target_ext_dir"
+    rm -rf "$temp_extract_dir"
+    return 0
+  else
+    error "Failed to install extension to $editor_name directory"
+    rm -rf "$temp_extract_dir"
+    return 1
+  fi
+}
+
+# Function to create main temporary directory
+create_temp_dir() {
+  if command -v mktemp >/dev/null 2>&1; then
+    MAIN_TEMP_DIR=$(mktemp -d)
+  else
+    if [[ "$MACHINE" == "Windows" ]]; then
+      temp_base="${TEMP:-/tmp}"
+    else
+      temp_base="/tmp"
+    fi
+    MAIN_TEMP_DIR="$temp_base/download_vsix_$$_$(date +%s)"
+    mkdir -p "$MAIN_TEMP_DIR"
+  fi
+  TEMP_DIRS+=("$MAIN_TEMP_DIR")
+  info "Created temporary directory: $MAIN_TEMP_DIR"
+}
+
+# Function to add temporary directory for cleanup
+add_temp_dir() {
+  TEMP_DIRS+=("$1")
+}
+
+# Function to cleanup on exit
+cleanup() {
+  if [[ ${#TEMP_DIRS[@]} -gt 0 ]]; then
+    for temp_dir in "${TEMP_DIRS[@]}"; do
+      if [[ -n "$temp_dir" && -d "$temp_dir" ]]; then
+        info "Cleaning up temporary directory: $temp_dir"
+        rm -rf "$temp_dir"
+      fi
+    done
+  fi
+  if [[ -n "${temp_file:-}" && -f "$temp_file" ]]; then
+    rm -f "$temp_file"
+  fi
+}
+
+# Function to parse install editors list
+parse_install_editors() {
+  local editors_list="$1"
+
+  # Convert to lowercase and split by comma
+  editors_list=$(echo "$editors_list" | tr '[:upper:]' '[:lower:]')
+
+  # Handle "all" special case
+  if [[ "$editors_list" == "all" ]]; then
+    INSTALL_TO_CURSOR=true
+    INSTALL_TO_WINDSURF=true
+    INSTALL_TO_TRAE=true
+    INSTALL_TO_VSCODIUM=true
+    INSTALL_TO_VSCODE=true
+    return
+  fi
+
+  # Split by comma and process each editor
+  IFS=',' read -ra EDITORS <<<"$editors_list"
+  for editor in "${EDITORS[@]}"; do
+    editor=$(echo "$editor" | xargs) # Trim whitespace
+    case "$editor" in
+    cursor)
+      INSTALL_TO_CURSOR=true
+      ;;
+    windsurf)
+      INSTALL_TO_WINDSURF=true
+      ;;
+    trae)
+      INSTALL_TO_TRAE=true
+      ;;
+    vscodium)
+      INSTALL_TO_VSCODIUM=true
+      ;;
+    vscode)
+      INSTALL_TO_VSCODE=true
+      ;;
+    *)
+      error "Unknown editor: $editor"
+      echo "Available editors: cursor, windsurf, trae, vscodium, vscode, all"
+      exit 1
+      ;;
+    esac
+  done
+}
+
+# Function to check dependencies and provide installation instructions
+check_dependencies() {
+  local missing_deps=()
+  local optional_missing=()
+
+  verbose "Checking dependencies..."
+
+  # Check for required dependencies
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    missing_deps+=("curl_or_wget")
+  fi
+
+  if ! command -v unzip >/dev/null 2>&1; then
+    missing_deps+=("unzip")
+  fi
+
+  # Check for optional but recommended dependencies
+  if ! command -v jq >/dev/null 2>&1; then
+    optional_missing+=("jq")
+  fi
+
+  if ! command -v file >/dev/null 2>&1; then
+    optional_missing+=("file")
+  fi
+
+  # Report missing required dependencies
+  if [[ ${#missing_deps[@]} -gt 0 ]]; then
+    error "Missing required dependencies!"
+    echo
+
+    for dep in "${missing_deps[@]}"; do
+      case "$dep" in
+      curl_or_wget)
+        echo "Missing: curl or wget (for downloading files)"
+        show_install_instructions "curl" "wget"
+        ;;
+      unzip)
+        echo "Missing: unzip (for extracting VSIX files)"
+        show_install_instructions "unzip"
+        ;;
+      esac
+      echo
+    done
+
+    exit $EXIT_MISSING_DEPENDENCIES
+  fi
+
+  # Report missing optional dependencies
+  if [[ ${#optional_missing[@]} -gt 0 ]]; then
+    warning "Missing optional dependencies (script will work but may be slower):"
+
+    for dep in "${optional_missing[@]}"; do
+      case "$dep" in
+      jq)
+        echo "  - jq (for better JSON parsing)"
+        ;;
+      file)
+        echo "  - file (for better file type detection)"
+        ;;
+      esac
+    done
+
+    echo "Install these for better performance:"
+    for dep in "${optional_missing[@]}"; do
+      show_install_instructions "$dep" | sed 's/^/  /'
+    done
+    echo
+  fi
+
+  verbose "All required dependencies found!"
+}
+
+# Function to show installation instructions for a package
+show_install_instructions() {
+  local package="$1"
+  local alt_package="$2"
+
+  case "$MACHINE" in
+  Mac)
+    case "$package" in
+    curl)
+      if [[ -n "$alt_package" ]]; then
+        echo "  macOS: curl is usually pre-installed, or install wget with:"
+        echo "    brew install wget"
+      else
+        echo "  macOS: curl is usually pre-installed"
+      fi
+      ;;
+    wget)
+      echo "  macOS: brew install wget"
+      ;;
+    unzip)
+      echo "  macOS: unzip is usually pre-installed, or: brew install unzip"
+      ;;
+    jq)
+      echo "  macOS: brew install jq"
+      ;;
+    file)
+      echo "  macOS: file is usually pre-installed"
+      ;;
+    esac
+    ;;
+  Linux | WSL)
+    case "$package" in
+    curl)
+      if [[ -n "$alt_package" ]]; then
+        echo "  Linux: sudo apt install curl wget  # or equivalent for your distro"
+      else
+        echo "  Linux: sudo apt install curl  # or equivalent for your distro"
+      fi
+      ;;
+    wget)
+      echo "  Linux: sudo apt install wget  # or equivalent for your distro"
+      ;;
+    unzip)
+      echo "  Linux: sudo apt install unzip  # or equivalent for your distro"
+      ;;
+    jq)
+      echo "  Linux: sudo apt install jq  # or equivalent for your distro"
+      ;;
+    file)
+      echo "  Linux: sudo apt install file  # or equivalent for your distro"
+      ;;
+    esac
+    ;;
+  Windows)
+    case "$package" in
+    curl)
+      if [[ -n "$alt_package" ]]; then
+        echo "  Windows: curl is available in Windows 10+, or install wget via:"
+        echo "    - Chocolatey: choco install wget"
+        echo "    - Scoop: scoop install wget"
+      else
+        echo "  Windows: curl is available in Windows 10+"
+      fi
+      ;;
+    wget)
+      echo "  Windows: choco install wget  # or scoop install wget"
+      ;;
+    unzip)
+      echo "  Windows: Available in PowerShell as Expand-Archive, or:"
+      echo "    choco install unzip  # or scoop install unzip"
+      ;;
+    jq)
+      echo "  Windows: choco install jq  # or scoop install jq"
+      ;;
+    file)
+      echo "  Windows: choco install file  # or scoop install file"
+      ;;
+    esac
+    ;;
+  *)
+    echo "  Please install $package using your system's package manager"
+    ;;
+  esac
+}
+
+# Function to get list of requested editors
+get_requested_editors() {
+  local requested_editors=()
+  [[ "$INSTALL_TO_CURSOR" == true ]] && requested_editors+=("cursor")
+  [[ "$INSTALL_TO_WINDSURF" == true ]] && requested_editors+=("windsurf")
+  [[ "$INSTALL_TO_TRAE" == true ]] && requested_editors+=("trae")
+  [[ "$INSTALL_TO_VSCODIUM" == true ]] && requested_editors+=("vscodium")
+  [[ "$INSTALL_TO_VSCODE" == true ]] && requested_editors+=("vscode")
+  echo "${requested_editors[@]}"
+}
+
+# Function to check editor availability and provide install instructions
+check_editor_availability() {
+  local requested_editors=()
+  while IFS= read -r editor; do
+      requested_editors+=("$editor")
+  done < <(get_requested_editors)
+
+  if [[ ${#requested_editors[@]} -eq 0 ]]; then
+    return 0 # No editors requested
+  fi
+
+  info "Checking editor availability..."
+
+  local missing_editors=()
+  local available_editors=()
+
+  for editor in "${requested_editors[@]}"; do
+    local cli_command=$(get_editor_cli_command "$editor")
+
+    if command -v "$cli_command" >/dev/null 2>&1; then
+      available_editors+=("$editor")
+    else
+      missing_editors+=("$editor")
+    fi
+  done
+
+  if [[ ${#available_editors[@]} -gt 0 ]]; then
+    info "Editors with CLI available: ${available_editors[*]}"
+  fi
+
+  if [[ ${#missing_editors[@]} -gt 0 ]]; then
+    warning "Editors without CLI (will use manual installation): ${missing_editors[*]}"
+    echo
+    echo "To enable CLI installation, install the editor CLIs:"
+
+    for editor in "${missing_editors[@]}"; do
+      show_editor_cli_instructions "$editor"
+    done
+    echo
+  fi
+}
+
+# Function to show editor CLI installation instructions
+show_editor_cli_instructions() {
+  local editor="$1"
+
+  case "$editor" in
+  cursor)
+    echo "  Cursor CLI:"
+    case "$MACHINE" in
+    Mac)
+      echo "    - Open Cursor → Command Palette (Cmd+Shift+P) → 'Shell Command: Install cursor command'"
+      ;;
+    Linux | WSL)
+      echo "    - Open Cursor → Command Palette (Ctrl+Shift+P) → 'Shell Command: Install cursor command'"
+      ;;
+    Windows)
+      echo "    - Open Cursor → Command Palette (Ctrl+Shift+P) → 'Shell Command: Install cursor command'"
+      ;;
+    esac
+    ;;
+  windsurf)
+    echo "  Windsurf CLI:"
+    echo "    - Check Windsurf documentation for CLI installation instructions"
+    ;;
+  trae)
+    echo "  Trae CLI:"
+    echo "    - Check Trae documentation for CLI installation instructions"
+    ;;
+  vscodium)
+    echo "  VS Codium CLI:"
+    case "$MACHINE" in
+    Mac)
+      echo "    - Open VS Codium → Command Palette (Cmd+Shift+P) → 'Shell Command: Install codium command'"
+      ;;
+    Linux | WSL)
+      echo "    - Usually available as 'codium' after installation"
+      ;;
+    Windows)
+      echo "    - Usually available as 'codium' after installation"
+      ;;
+    esac
+    ;;
+  vscode)
+    echo "  VS Code CLI:"
+    case "$MACHINE" in
+    Mac)
+      echo "    - Open VS Code → Command Palette (Cmd+Shift+P) → 'Shell Command: Install code command'"
+      ;;
+    Linux | WSL)
+      echo "    - Usually available as 'code' after installation"
+      ;;
+    Windows)
+      echo "    - Usually available as 'code' after installation"
+      ;;
+    esac
+    ;;
+  esac
+}
+
+# Command handlers
+cmd_search() {
+    local search_term=""
+    local limit=10
+    
+    # Parse search command options
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h | --help)
+                show_command_help "search"
+                ;;
+            -q | --quiet)
+                QUIET=true
+                shift
+                ;;
+            -V | --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            -l | --limit)
+                if [[ -n "$2" && "$2" =~ ^[0-9]+$ ]]; then
+                    limit="$2"
+                    shift 2
+                else
+                    error "--limit requires a number"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -m | --marketplace)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    if ! set_marketplace "$2" true; then
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    shift 2
+                else
+                    error "--marketplace requires a value (official, openvsx, coder, eclipse)"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -*)
+                error "Unknown option for search: $1"
+                echo "Use '$SCRIPT_NAME help search' for usage information."
+                exit $EXIT_GENERAL_ERROR
+                ;;
+            *)
+                if [[ -z "$search_term" ]]; then
+                    search_term="$1"
+                else
+                    error "Too many arguments for search command"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Validate search term
+    if [[ -z "$search_term" ]]; then
+        error "Search term required"
+        echo "Usage: $SCRIPT_NAME search <search-term>"
+        exit $EXIT_GENERAL_ERROR
+    fi
+
+    # Perform search
+    search_extensions "$search_term" "$limit"
+}
+
+cmd_info() {
+    local extension_id=""
+    local version=""
+
+    # Parse info command options  
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h | --help)
+                show_command_help "info"
+                ;;
+            -q | --quiet)
+                QUIET=true
+                shift
+                ;;
+            -V | --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            -v | --version)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    version="$2"
+                    shift 2
+                else
+                    error "--version requires a version number"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -m | --marketplace)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    if ! set_marketplace "$2" true; then
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    shift 2
+                else
+                    error "--marketplace requires a value (official, openvsx, coder, eclipse)"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -*)
+                error "Unknown option for info: $1"
+                echo "Use '$SCRIPT_NAME help info' for usage information."
+                exit $EXIT_GENERAL_ERROR
+                ;;
+            *)
+                if [[ -z "$extension_id" ]]; then
+                    extension_id="$1"
+                else
+                    error "Too many arguments for info command"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Validate extension ID
+    if [[ -z "$extension_id" ]]; then
+        error "Extension ID or URL required"
+        echo "Usage: $SCRIPT_NAME info <extension-id-or-url>"
+        exit $EXIT_GENERAL_ERROR
+    fi
+
+    # Extract extension ID from URL if needed
+    local extracted_id
+    if ! extracted_id=$(extract_extension_id "$extension_id"); then
+        exit $EXIT_INVALID_EXTENSION_ID
+    fi
+
+    # Get extension information
+    get_extension_info "$extracted_id" "$version"
+}
+
+cmd_download() {
+    local extension_list=()
+    local custom_output=""
+    
+    # Parse download command options
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h | --help)
+                show_command_help "download"
+                ;;
+            -q | --quiet)
+                QUIET=true
+                shift
+                ;;
+            -V | --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            -y | --yes)
+                AUTO_YES=true
+                shift
+                ;;
+            -p | --no-progress)
+                SHOW_PROGRESS=false
+                shift
+                ;;
+            -d | --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            -c | --no-color)
+                NO_COLOR=true
+                shift
+                ;;
+            -m | --marketplace)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    if ! set_marketplace "$2" true; then
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    shift 2
+                else
+                    error "--marketplace requires a value (official, openvsx, coder, eclipse)"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -v | --version)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    EXTENSION_VERSION="$2"
+                    shift 2
+                else
+                    error "--version requires a version number"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -o | --output)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    custom_output="$2"
+                    shift 2
+                else
+                    error "--output requires a path"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -*)
+                error "Unknown option for download: $1"
+                echo "Use '$SCRIPT_NAME help download' for usage information."
+                exit $EXIT_GENERAL_ERROR
+                ;;
+            *)
+                extension_list+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Read from stdin if no arguments provided
+    if [[ ${#extension_list[@]} -eq 0 ]]; then
+        local stdin_extensions=()
+        while IFS= read -r ext; do
+            [[ -n "$ext" ]] && stdin_extensions+=("$ext")
+        done < <(read_extensions_from_stdin)
+        extension_list=("${stdin_extensions[@]}")
+    fi
+    
+    if [[ ${#extension_list[@]} -eq 0 ]]; then
+        error "At least one extension ID or URL required"
+        echo "Usage: $SCRIPT_NAME download <extension-id-or-url> [extension-id-or-url2] ..."
+        echo "   or: echo 'extension1 extension2' | $SCRIPT_NAME download"
+        exit $EXIT_GENERAL_ERROR
+    fi
+    
+    # Execute download logic
+    if [[ -n "$custom_output" ]]; then
+        execute_download "${extension_list[@]}" "$custom_output"
+    else
+        execute_download "${extension_list[@]}"
+    fi
+}
+
+cmd_install() {
+    local extension_list=()
+    local custom_output=""
+    local editors="cursor"  # Default to cursor
+    
+    # Parse install command options
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h | --help)
+                show_command_help "install"
+                ;;
+            -q | --quiet)
+                QUIET=true
+                shift
+                ;;
+            -V | --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            -y | --yes)
+                AUTO_YES=true
+                shift
+                ;;
+            -p | --no-progress)
+                SHOW_PROGRESS=false
+                shift
+                ;;
+            -d | --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            -c | --no-color)
+                NO_COLOR=true
+                shift
+                ;;
+            -m | --marketplace)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    if ! set_marketplace "$2" true; then
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    shift 2
+                else
+                    error "--marketplace requires a value (official, openvsx, coder, eclipse)"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -v | --version)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    EXTENSION_VERSION="$2"
+                    shift 2
+                else
+                    error "--version requires a version number"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -o | --output)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    custom_output="$2"
+                    shift 2
+                else
+                    error "--output requires a path"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -e | --editors)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    editors="$2"
+                    shift 2
+                else
+                    error "--editors requires a comma-separated list of editors"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -*)
+                error "Unknown option for install: $1"
+                echo "Use '$SCRIPT_NAME help install' for usage information."
+                exit $EXIT_GENERAL_ERROR
+                ;;
+            *)
+                extension_list+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Read from stdin if no arguments provided
+    if [[ ${#extension_list[@]} -eq 0 ]]; then
+        local stdin_extensions=()
+        while IFS= read -r ext; do
+            [[ -n "$ext" ]] && stdin_extensions+=("$ext")
+        done < <(read_extensions_from_stdin)
+        extension_list=("${stdin_extensions[@]}")
+    fi
+    
+    if [[ ${#extension_list[@]} -eq 0 ]]; then
+        error "At least one extension ID or URL required"
+        echo "Usage: $SCRIPT_NAME install <extension-id-or-url> [extension-id-or-url2] ..."
+        echo "   or: echo 'extension1 extension2' | $SCRIPT_NAME install"
+        exit $EXIT_GENERAL_ERROR
+    fi
+    
+    # Parse editors and set flags
+    parse_install_editors "$editors"
+    
+    # Execute download and install logic
+    if [[ -n "$custom_output" ]]; then
+        execute_download "${extension_list[@]}" "$custom_output"
+    else
+        execute_download "${extension_list[@]}"
+    fi
+}
+
+cmd_update() {
+    local check_only=false
+    local force_update=false
+    
+    # Parse update command options
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -q | --quiet)
+                QUIET=true
+                shift
+                ;;
+            -y | --yes)
+                AUTO_YES=true
+                shift
+                ;;
+            --check)
+                check_only=true
+                shift
+                ;;
+            --force)
+                force_update=true
+                shift
+                ;;
+            -*)
+                error "Unknown option for update: $1"
+                echo "Use '$SCRIPT_NAME help update' for usage information."
+                exit $EXIT_GENERAL_ERROR
+                ;;
+            *)
+                error "Too many arguments for update command"
+                echo "Usage: $SCRIPT_NAME update [options]"
+                exit $EXIT_GENERAL_ERROR
+                ;;
+        esac
+    done
+    
+    if [[ "$check_only" == true ]]; then
+        check_for_updates false
+        exit $?
+    else
+        # Create temp directory for update
+        create_temp_dir
+        self_update "$force_update" "$AUTO_YES"
+        exit $?
+    fi
+}
+
+cmd_version() {
+    echo "$SCRIPT_NAME $SCRIPT_VERSION"
+    exit 0
+}
+
+cmd_help() {
+    if [[ $# -gt 0 ]]; then
+        show_command_help "$1"
+    else
+        show_help
+    fi
+}
+
+# Main command dispatcher
+main() {
+    trap cleanup EXIT
+    
+    # Load configuration first
+    load_config
+    
+    # Parse global options first
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -q | --quiet)
+                QUIET=true
+                shift
+                ;;
+            -V | --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            -y | --yes)
+                AUTO_YES=true
+                shift
+                ;;
+            -c | --no-color)
+                NO_COLOR=true
+                shift
+                ;;
+            -m | --marketplace)
+                if [[ -n "$2" && "$2" != -* ]]; then
+                    if ! set_marketplace "$2" true; then
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    shift 2
+                else
+                    error "--marketplace requires a value (official, openvsx, coder, eclipse)"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+                ;;
+            -h | --help)
+                setup_colors
+                show_help
+                ;;
+            -*)
+                error "Unknown global option: $1"
+                echo "Use --help for usage information."
+                exit $EXIT_GENERAL_ERROR
+                ;;
+            *)
+                break  # Found command, stop parsing global options
+                ;;
+        esac
+    done
+    
+    # Initialize colors after parsing flags
+    setup_colors
+    
+    # Get command
+    if [[ $# -eq 0 ]]; then
+        error "No command specified"
+        echo "Use '$SCRIPT_NAME help' to see available commands."
+        exit $EXIT_GENERAL_ERROR
+    fi
+    
+    local command="$1"
+    shift
+    
+    # Check dependencies for commands that need them
+    case "$command" in
+        search|info|download|install)
+            check_dependencies
+            ;;
+        update)
+            # Only check for curl/wget for updates
+            if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+                error "Neither curl nor wget available for updates"
+                exit $EXIT_MISSING_DEPENDENCIES
+            fi
+            ;;
+    esac
+    
+    # Dispatch to command handler
+    case "$command" in
+        search)
+            cmd_search "$@"
+            ;;
+        info)
+            cmd_info "$@"
+            ;;
+        download)
+            cmd_download "$@"
+            ;;
+        install)
+            cmd_install "$@"
+            ;;
+        config)
+            cmd_config "$@"
+            ;;
+        update)
+            cmd_update "$@"
+            ;;
+        version)
+            cmd_version "$@"
+            ;;
+        help)
+            cmd_help "$@"
+            ;;
+        *)
+            error "Unknown command: $command"
+            echo "Use '$SCRIPT_NAME help' to see available commands."
+            exit $EXIT_GENERAL_ERROR
+            ;;
+    esac
+}
+
+# Function to execute download logic (shared between download and install commands)
+execute_download() {
+    local args=("$@")
+    local extension_list=()
+    local custom_output=""
+    
+    # Handle case where we have arguments
+    if [[ ${#args[@]} -eq 0 ]]; then
+        error "No extensions provided"
+        exit $EXIT_GENERAL_ERROR
+    fi
+    
+    # Simple approach: assume all arguments are extensions except if last one looks like a path
+    if [[ ${#args[@]} -gt 1 ]]; then
+        local last_index=$((${#args[@]} - 1))
+        local last_arg="${args[$last_index]}"
+        # Check if last argument looks like a path (contains / but not a dot indicating extension ID)
+        # But exclude URLs which also contain / but are valid extension inputs
+        if [[ "$last_arg" == *"/"* && "$last_arg" != *"."* && ! "$last_arg" =~ ^https?:// ]] || [[ "$last_arg" =~ ^/ ]]; then
+            custom_output="$last_arg"
+            extension_list=("${args[@]:0:$last_index}")
+        else
+            extension_list=("${args[@]}")
+        fi
+    else
+        extension_list=("${args[@]}")
+    fi
+    
+    # Process extensions
+    if [[ ${#extension_list[@]} -gt 1 ]]; then
+        # Batch mode - process multiple extensions
+        minimal "Processing ${#extension_list[@]} extensions..."
+        
+        local success_count=0
+        local failed_extensions=()
+        
+        # Create main temp directory for batch processing
+        create_temp_dir
+        
+        for ext_spec in "${extension_list[@]}"; do
+            minimal "Processing: $ext_spec"
+            
+            # Parse extension spec (handle URL or direct ID with optional version)
+            local ext_input ext_version=""
+            if [[ "$ext_spec" == *"@"* && ! "$ext_spec" =~ ^https?:// ]]; then
+                # Only split on @ if it's not a URL (URLs might contain @ in query params)
+                ext_input="${ext_spec%@*}"
+                ext_version="${ext_spec#*@}"
+            else
+                ext_input="$ext_spec"
+            fi
+            
+            # Extract extension ID from URL or validate direct ID and set marketplace preference
+            local ext_id
+            EXTRACTED_EXTENSION_ID=""
+            if extract_extension_id_to_var "$ext_input"; then
+                ext_id="$EXTRACTED_EXTENSION_ID"
+            else
+                failed_extensions+=("$ext_spec")
+                continue
+            fi
+            
+            if process_single_extension "$ext_id" "$ext_version" "$custom_output"; then
+                success_count=$((success_count + 1))
+            else
+                failed_extensions+=("$ext_spec")
+            fi
+        done
+        
+        minimal "Batch processing complete:"
+        minimal "  Total: ${#extension_list[@]}, Successful: $success_count, Failed: ${#failed_extensions[@]}"
+        
+        if [[ ${#failed_extensions[@]} -gt 0 ]]; then
+            warning "Failed extensions:"
+            for ext in "${failed_extensions[@]}"; do
+                echo "  - $ext"
+            done
+            exit $EXIT_GENERAL_ERROR
+        fi
+        
+        exit $EXIT_SUCCESS
+    else
+        # Single extension mode
+        local ext_spec="${extension_list[0]}"
+        
+        # Parse extension spec (handle URL or direct ID with optional version)
+        local ext_input ext_version=""
+        if [[ "$ext_spec" == *"@"* && ! "$ext_spec" =~ ^https?:// ]]; then
+            # Only split on @ if it's not a URL (URLs might contain @ in query params)
+            ext_input="${ext_spec%@*}"
+            ext_version="${ext_spec#*@}"
+            EXTENSION_VERSION="$ext_version"
+        else
+            ext_input="$ext_spec"
+        fi
+        
+        # Extract extension ID from URL or validate direct ID and set marketplace preference
+        local extensionId
+        # Use a different approach to avoid subshell issues
+        EXTRACTED_EXTENSION_ID=""
+        if extract_extension_id_to_var "$ext_input"; then
+            extensionId="$EXTRACTED_EXTENSION_ID"
+        else
+            exit $EXIT_INVALID_EXTENSION_ID
+        fi
+        
+        # Process single extension with original logic
+        process_single_extension_original "$extensionId" "$custom_output"
+    fi
+}
+
+# Function to process single extension (original logic for single mode)
+process_single_extension_original() {
+    local extensionId="$1"
+    local custom_output="$2"
+    
+    # Extract publisher and name
+    local publisher=$(echo "$extensionId" | cut -d '.' -f 1)
+    local name=$(echo "$extensionId" | cut -d '.' -f 2)
+
+    if [[ "$DRY_RUN" == true ]]; then
+        minimal "DRY RUN MODE - No files will be downloaded or installed"
+    fi
+
+    # Minimal output: just show what we're processing
+    minimal "Processing: $extensionId"
+    
+    # Verbose output: show detailed information
+    verbose "Publisher: $publisher"
+    verbose "Name: $name"
+    if [[ -n "$EXTENSION_VERSION" ]]; then
+        verbose "Requested version: $EXTENSION_VERSION"
+    else
+        verbose "Version: latest"
+    fi
+
+    # Determine output directory and filename
+    local output_dir output_filename
+    if [[ -n "$custom_output" ]]; then
+        # Custom output path provided
+        if [[ "$custom_output" == */ ]]; then
+            # It's a directory, use default filename
+            output_dir="$custom_output"
+            output_filename=""
+        elif [[ -d "$custom_output" ]]; then
+            # Existing directory without trailing slash
+            output_dir="$custom_output/"
+            output_filename=""
+        else
+            # It's a full path with filename
+            output_dir="$(dirname "$custom_output")"
+            output_filename="$(basename "$custom_output")"
+        fi
+    else
+        # Use current working directory
+        output_dir="$(pwd)"
+        output_filename=""
+    fi
+
+    # Create output directory if it doesn't exist (unless dry run)
+    if [[ "$DRY_RUN" == false ]]; then
+        if [[ ! -d "$output_dir" ]]; then
+            if ! mkdir -p "$output_dir"; then
+                error "Failed to create output directory: $output_dir"
+                exit $EXIT_GENERAL_ERROR
+            fi
+            verbose "Created output directory: $output_dir"
+        fi
+    else
+        verbose "Would create output directory: $output_dir"
+    fi
+
+    # Create main temporary directory (unless dry run)
+    local temp_file
+    if [[ "$DRY_RUN" == false ]]; then
+        create_temp_dir
+        # Create temporary file for download
+        temp_file="$MAIN_TEMP_DIR/extension.vsix"
+    else
+        verbose "Would create temporary directory for download"
+    fi
+
+    # Construct download URL based on marketplace
+    local downloadUrl
+    downloadUrl=$(get_download_url "$publisher" "$name" "$EXTENSION_VERSION")
+    
+    # Show marketplace being used
+    local marketplace_name=$(get_marketplace_name "$(get_current_marketplace)")
+    verbose "Using marketplace: $marketplace_name"
+    verbose "Download URL: $downloadUrl"
+
+    # Download the extension (unless dry run)
+    if [[ "$DRY_RUN" == false ]]; then
+        minimal "Downloading..."
+        download_with_progress "$downloadUrl" "$temp_file"
+    else
+        verbose "Would download extension from: $downloadUrl"
+    fi
+
+    # Verify the downloaded file is a valid zip file and extract version
+    local version
+    if [[ "$DRY_RUN" == false ]]; then
+        # Check file size first
+        if [[ ! -s "$temp_file" ]]; then
+            error "Downloaded file is empty"
+            exit $EXIT_DOWNLOAD_FAILED
+        fi
+
+        # Try to identify as zip file - use different methods for different platforms
+        local zip_valid=false
+
+        # Method 1: Use 'file' command if available
+        if command -v file >/dev/null 2>&1; then
+            if file "$temp_file" | grep -q -E "(Zip archive|zip compressed|ZIP archive)"; then
+                zip_valid=true
+            fi
+        fi
+
+        # Method 2: Check zip magic number with available tools
+        if [[ "$zip_valid" == false ]]; then
+            # Try xxd first (common on many systems)
+            if command -v xxd >/dev/null 2>&1; then
+                if xxd -l 4 "$temp_file" 2>/dev/null | grep -q -E "(504b 0304|504b 0506|504b 0708)"; then
+                    zip_valid=true
+                fi
+                # Try od (more universal)
+            elif command -v od >/dev/null 2>&1; then
+                if od -t x1 -N 4 "$temp_file" 2>/dev/null | grep -q -E "(50 4b 03 04|50 4b 05 06|50 4b 07 08)"; then
+                    zip_valid=true
+                fi
+                # Try hexdump (common on BSD/macOS)
+            elif command -v hexdump >/dev/null 2>&1; then
+                if hexdump -C -n 4 "$temp_file" 2>/dev/null | grep -q -E "(50 4b 03 04|50 4b 05 06|50 4b 07 08)"; then
+                    zip_valid=true
+                fi
+                # Last resort: try to unzip a small part
+            elif command -v unzip >/dev/null 2>&1; then
+                if unzip -t "$temp_file" >/dev/null 2>&1; then
+                    zip_valid=true
+                fi
+            fi
+        fi
+
+        if [[ "$zip_valid" == false ]]; then
+            error "Downloaded file is not a valid VSIX (zip) file"
+            exit $EXIT_DOWNLOAD_FAILED
+        fi
+
+        # Extract version from the manifest
+        # Using sed instead of grep -P for better compatibility
+        version=$(unzip -p "$temp_file" extension.vsixmanifest 2>/dev/null | sed -n 's/.*<Identity[^>]*Version="\([^"]*\)".*/\1/p' | head -n1)
+
+        if [[ -z "$version" ]]; then
+            if [[ -n "$EXTENSION_VERSION" ]]; then
+                version="$EXTENSION_VERSION"
+            else
+                warning "Could not extract version from manifest, using 'unknown'"
+                version="unknown"
+            fi
+        fi
+    else
+        # In dry run mode, use requested version or "latest"
+        verbose "Would verify downloaded file is valid"
+        if [[ -n "$EXTENSION_VERSION" ]]; then
+            version="$EXTENSION_VERSION"
+        else
+            version="latest"
+        fi
+    fi
+
+    # Determine final filename and path
+    local final_file
+    if [[ -n "$output_filename" ]]; then
+        # Custom filename provided
+        final_file="${output_dir%/}/$output_filename"
+    else
+        # Use default naming pattern
+        final_file="${output_dir%/}/${extensionId}-${version}.vsix"
+    fi
+
+    # Check if file already exists and handle appropriately
+    if [[ "$DRY_RUN" == false ]]; then
+        if [[ -f "$final_file" ]]; then
+            warning "File already exists: $final_file"
+
+            # Check if we should auto-answer yes
+            if [[ "$AUTO_YES" == true ]]; then
+                verbose "Auto-accepting overwrite (--yes flag)"
+                # In quiet mode or non-interactive mode, don't prompt
+            elif [[ "$QUIET" == true ]]; then
+                error "File already exists (use a different output path, remove the existing file, or use --yes flag)"
+                exit $EXIT_FILE_EXISTS
+            elif [[ ! -t 0 ]]; then # Non-interactive mode
+                error "File already exists and running in non-interactive mode (use --yes flag to auto-overwrite)"
+                exit $EXIT_FILE_EXISTS
+            else
+                # Interactive mode - prompt user
+                printf "Overwrite? (y/N): "
+                if command -v read >/dev/null 2>&1; then
+                    # Try to use read with timeout and single character input
+                    if read -t 30 -n 1 -r response 2>/dev/null; then
+                        printf "\n"
+                    else
+                        # Fallback for systems that don't support -n flag
+                        read -r response
+                    fi
+                else
+                    # Last resort fallback
+                    response=$(head -c 1)
+                fi
+
+                case "$response" in
+                [Yy]*)
+                    verbose "Overwriting existing file..."
+                    ;;
+                *)
+                    minimal "Download cancelled"
+                    exit $EXIT_SUCCESS
+                    ;;
+                esac
+            fi
+        fi
+
+        # Move the file to final location
+        if ! mv "$temp_file" "$final_file"; then
+            error "Failed to move file to final location"
+            exit $EXIT_GENERAL_ERROR
+        fi
+
+        # Clear the temp_file variable so cleanup doesn't try to remove it
+        temp_file=""
+    else
+        verbose "Would save file to: $final_file"
+        if [[ -f "$final_file" ]]; then
+            verbose "Note: File already exists and would be overwritten"
+        fi
+    fi
+
+    if [[ "$DRY_RUN" == false ]]; then
+        success "Downloaded: $(basename "$final_file")"
+        verbose "Location: $final_file"
+        verbose "Version: $version"
+    else
+        success "Dry run completed - no files were actually downloaded"
+        verbose "Would save to: $final_file"
+        verbose "Version: $version"
+    fi
+
+    # Handle installation (unless dry run)
+    if [[ "$INSTALL_TO_CURSOR" == true || "$INSTALL_TO_WINDSURF" == true || "$INSTALL_TO_TRAE" == true || "$INSTALL_TO_VSCODIUM" == true || "$INSTALL_TO_VSCODE" == true ]]; then
+        if [[ "$DRY_RUN" == false ]]; then
+            # Check editor availability
+            check_editor_availability
+
+            # Install to requested editors
+            requested_editors=()
+            while IFS= read -r editor; do
+                requested_editors+=("$editor")
+            done < <(get_requested_editors)
+            installation_failed=false
+
+            for editor in "${requested_editors[@]}"; do
+                if ! install_to_editor "$final_file" "$editor"; then
+                    editor_name=$(get_editor_display_name "$editor")
+                    warning "Installation to $editor_name failed"
+                    installation_failed=true
+                fi
+            done
+
+            if [[ "$installation_failed" == true ]]; then
+                warning "Extension download succeeded, but some installations failed"
+                exit $EXIT_INSTALLATION_FAILED
+            fi
+        else
+            # Dry run mode - show what would be installed
+            requested_editors=()
+            while IFS= read -r editor; do
+                requested_editors+=("$editor")
+            done < <(get_requested_editors)
+            install_list=()
+
+            for editor in "${requested_editors[@]}"; do
+                editor_name=$(get_editor_display_name "$editor")
+                install_list+=("$editor_name")
+            done
+
+            verbose "Would install extension to: ${install_list[*]}"
+        fi
+    fi
+
+    # Get file size in a cross-platform way (only if file was actually downloaded)
+    if [[ "$DRY_RUN" == false ]]; then
+        if command -v du >/dev/null 2>&1; then
+            # Try GNU du first (common on Linux)
+            if du --version 2>/dev/null | grep -q "GNU"; then
+                file_size=$(du -h "$final_file" | cut -f1)
+                # Try BSD du (macOS)
+            elif [[ "$MACHINE" == "Mac" ]]; then
+                file_size=$(du -h "$final_file" | cut -f1)
+            else
+                # Generic du
+                file_size=$(du -h "$final_file" 2>/dev/null | cut -f1 || echo "unknown")
+            fi
+            verbose "Size: $file_size"
+        elif command -v ls >/dev/null 2>&1; then
+            # Fallback using ls
+            file_size=$(ls -lh "$final_file" 2>/dev/null | awk '{print $5}' || echo "unknown")
+            verbose "Size: $file_size"
+        elif command -v stat >/dev/null 2>&1; then
+            # Try stat as last resort
+            if [[ "$MACHINE" == "Mac" ]]; then
+                file_size=$(stat -f%z "$final_file" 2>/dev/null || echo "unknown")
+            else
+                file_size=$(stat -c%s "$final_file" 2>/dev/null || echo "unknown")
+            fi
+            verbose "Size: $file_size bytes"
+        fi
+    fi
+}
+
+# Configuration file support
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/vsix-cli/config"
+
+# Load configuration from file
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # Source the config file in a safe way
+        while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ "$key" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "$key" ]] && continue
+            
+            # Remove leading/trailing whitespace
+            key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            case "$key" in
+                "default_marketplace")
+                    if validate_marketplace "$value"; then
+                        MARKETPLACE="$value"
+                    fi
+                    ;;
+                "default_editors")
+                    # This will be used by install command if no editors specified
+                    DEFAULT_EDITORS="$value"
+                    ;;
+                "show_progress")
+                    [[ "$value" =~ ^(true|false)$ ]] && SHOW_PROGRESS="$value"
+                    ;;
+                "auto_yes")
+                    [[ "$value" =~ ^(true|false)$ ]] && AUTO_YES="$value"
+                    ;;
+                "no_color")
+                    [[ "$value" =~ ^(true|false)$ ]] && NO_COLOR="$value"
+                    ;;
+            esac
+        done < "$CONFIG_FILE"
+    fi
+}
+
+# Save configuration to file
+save_config() {
+    local config_dir
+    config_dir=$(dirname "$CONFIG_FILE")
+    
+    # Create config directory if it doesn't exist
+    if [[ ! -d "$config_dir" ]]; then
+        if ! mkdir -p "$config_dir"; then
+            error "Failed to create config directory: $config_dir"
+            return 1
+        fi
+    fi
+    
+    # Write configuration
+    cat > "$CONFIG_FILE" << EOF
+# vsix-cli configuration file
+# This file is automatically generated. Edit with care.
+
+# Default marketplace (official, openvsx, coder, eclipse)
+default_marketplace=$MARKETPLACE
+
+# Default editors for install command (comma-separated)
+default_editors=${DEFAULT_EDITORS:-cursor}
+
+# Show progress indicators (true/false)
+show_progress=$SHOW_PROGRESS
+
+# Auto-answer yes to prompts (true/false)
+auto_yes=$AUTO_YES
+
+# Disable colored output (true/false)  
+no_color=$NO_COLOR
+EOF
+
+    success "Configuration saved to: $CONFIG_FILE"
+    return 0
+}
+
+cmd_config() {
+    local action="${1:-get}"
+    shift || true
+    
+    case "$action" in
+        "get")
+            if [[ $# -eq 0 ]]; then
+                # Show all configuration
+                echo "Current configuration:"
+                echo "  default_marketplace: $MARKETPLACE"
+                echo "  default_editors: ${DEFAULT_EDITORS:-cursor}"
+                echo "  show_progress: $SHOW_PROGRESS"
+                echo "  auto_yes: $AUTO_YES"
+                echo "  no_color: $NO_COLOR"
+                echo ""
+                echo "Configuration file: $CONFIG_FILE"
+                if [[ -f "$CONFIG_FILE" ]]; then
+                    echo "  (file exists)"
+                else
+                    echo "  (file does not exist - using defaults)"
+                fi
+            else
+                # Show specific setting
+                local key="$1"
+                case "$key" in
+                    "default_marketplace") echo "$MARKETPLACE" ;;
+                    "default_editors") echo "${DEFAULT_EDITORS:-cursor}" ;;
+                    "show_progress") echo "$SHOW_PROGRESS" ;;
+                    "auto_yes") echo "$AUTO_YES" ;;
+                    "no_color") echo "$NO_COLOR" ;;
+                    *) 
+                        error "Unknown configuration key: $key"
+                        echo "Available keys: default_marketplace, default_editors, show_progress, auto_yes, no_color"
+                        exit $EXIT_GENERAL_ERROR
+                        ;;
+                esac
+            fi
+            ;;
+        "set")
+            if [[ $# -lt 2 ]]; then
+                error "Usage: $SCRIPT_NAME config set <key> <value>"
+                echo "Available keys: default_marketplace, default_editors, show_progress, auto_yes, no_color"
+                exit $EXIT_GENERAL_ERROR
+            fi
+            
+            local key="$1"
+            local value="$2"
+            
+            case "$key" in
+                "default_marketplace")
+                    if validate_marketplace "$value"; then
+                        MARKETPLACE="$value"
+                        save_config
+                        success "Set default_marketplace to: $value"
+                    else
+                        error "Invalid marketplace: $value"
+                        echo "Valid marketplaces: ${VALID_MARKETPLACES[*]}"
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    ;;
+                "default_editors")
+                    DEFAULT_EDITORS="$value"
+                    save_config
+                    success "Set default_editors to: $value"
+                    ;;
+                "show_progress")
+                    if [[ "$value" =~ ^(true|false)$ ]]; then
+                        SHOW_PROGRESS="$value"
+                        save_config
+                        success "Set show_progress to: $value"
+                    else
+                        error "Value must be 'true' or 'false'"
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    ;;
+                "auto_yes")
+                    if [[ "$value" =~ ^(true|false)$ ]]; then
+                        AUTO_YES="$value"
+                        save_config
+                        success "Set auto_yes to: $value"
+                    else
+                        error "Value must be 'true' or 'false'"
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    ;;
+                "no_color")
+                    if [[ "$value" =~ ^(true|false)$ ]]; then
+                        NO_COLOR="$value"
+                        save_config
+                        success "Set no_color to: $value"
+                    else
+                        error "Value must be 'true' or 'false'"
+                        exit $EXIT_GENERAL_ERROR
+                    fi
+                    ;;
+                *)
+                    error "Unknown configuration key: $key"
+                    echo "Available keys: default_marketplace, default_editors, show_progress, auto_yes, no_color"
+                    exit $EXIT_GENERAL_ERROR
+                    ;;
+            esac
+            ;;
+        "reset")
+            if [[ -f "$CONFIG_FILE" ]]; then
+                if rm "$CONFIG_FILE"; then
+                    success "Configuration file deleted: $CONFIG_FILE"
+                    success "All settings reset to defaults"
+                else
+                    error "Failed to delete configuration file"
+                    exit $EXIT_GENERAL_ERROR
+                fi
+            else
+                info "No configuration file exists"
+            fi
+            ;;
+        *)
+            error "Unknown config action: $action"
+            echo "Usage: $SCRIPT_NAME config [get|set|reset]"
+            echo "  get [key]       Show configuration (all or specific key)"
+            echo "  set <key> <val> Set configuration value"
+            echo "  reset           Delete configuration file"
+            exit $EXIT_GENERAL_ERROR
+            ;;
+    esac
+}
+
+# Execute main function with all arguments
+main "$@"
