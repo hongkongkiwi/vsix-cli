@@ -18,7 +18,6 @@ jobs:
   update-homebrew:
     name: Update Homebrew Formula
     runs-on: ubuntu-latest
-    if: github.repository == 'hongkongkiwi/vsix-cli'
     
     steps:
     - name: Checkout main repository
