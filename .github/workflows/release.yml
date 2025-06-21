@@ -66,14 +66,7 @@ jobs:
             exit 1
           fi
 
-      - name: Check changelog entry
-        run: |
-          VERSION="${{ steps.extract_version.outputs.version }}"
-          if ! grep -q "\[$VERSION\]" CHANGELOG.md; then
-            echo "No changelog entry found for version $VERSION"
-            echo "Please add an entry to CHANGELOG.md"
-            exit 1
-          fi
+
 
   run-tests:
     name: Run Full Test Suite
@@ -128,8 +121,9 @@ jobs:
           echo "## What's New in $TAG" > release_notes.md
           echo "" >> release_notes.md
           
-          # Extract the section from CHANGELOG.md
-          awk "/## \[$VERSION\]/,/## \[/ { if (/## \[$VERSION\]/) next; if (/## \[/) exit; print }" CHANGELOG.md >> release_notes.md
+          # Add basic release information
+          echo "🚀 New release of vsix-cli with latest features and improvements!" >> release_notes.md
+          echo "" >> release_notes.md
           
           # Add installation instructions
           echo "" >> release_notes.md
@@ -166,7 +160,7 @@ jobs:
           echo "- \`.dockerignore\` - Docker build context optimization" >> release_notes.md
           echo "- \`README.md\` - Complete documentation" >> release_notes.md
           echo "- \`LICENSE\` - MIT License" >> release_notes.md
-          echo "- \`CHANGELOG.md\` - Version history" >> release_notes.md
+
           
           # Show the generated notes
           echo "Generated release notes:"
@@ -182,7 +176,6 @@ jobs:
             vsix-cli
             README.md
             LICENSE
-            CHANGELOG.md
             Dockerfile
             .dockerignore
           draft: false
@@ -329,7 +322,7 @@ jobs:
           echo "- [.dockerignore](https://github.com/hongkongkiwi/vsix-cli/releases/download/$TAG/.dockerignore)" >> $GITHUB_STEP_SUMMARY
           echo "- [README.md](https://github.com/hongkongkiwi/vsix-cli/releases/download/$TAG/README.md)" >> $GITHUB_STEP_SUMMARY
           echo "- [LICENSE](https://github.com/hongkongkiwi/vsix-cli/releases/download/$TAG/LICENSE)" >> $GITHUB_STEP_SUMMARY
-          echo "- [CHANGELOG.md](https://github.com/hongkongkiwi/vsix-cli/releases/download/$TAG/CHANGELOG.md)" >> $GITHUB_STEP_SUMMARY
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 🚀 Quick Install" >> $GITHUB_STEP_SUMMARY
           echo "### Direct Download" >> $GITHUB_STEP_SUMMARY

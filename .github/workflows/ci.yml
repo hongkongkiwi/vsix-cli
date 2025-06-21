@@ -198,7 +198,7 @@ jobs:
 
       - name: Check required files
         run: |
-          files=("README.md" "LICENSE" "CHANGELOG.md" "CONTRIBUTING.md" ".gitignore")
+          files=("README.md" "LICENSE" "CONTRIBUTING.md" ".gitignore")
           for file in "${files[@]}"; do
             if [ ! -f "$file" ]; then
               echo "Missing required file: $file"
@@ -216,12 +216,7 @@ jobs:
             fi
           done
 
-      - name: Validate CHANGELOG format
-        run: |
-          if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
-            echo "CHANGELOG.md missing Unreleased section"
-            exit 1
-          fi
+      
 
   performance:
     name: Performance Tests
@@ -273,14 +268,7 @@ jobs:
             exit 1
           fi
 
-      - name: Check changelog version
-        run: |
-          script_version="${{ steps.script_version.outputs.version }}"
-          if ! grep -q "\[$script_version\]" CHANGELOG.md; then
-            echo "Version $script_version not found in CHANGELOG.md"
-            echo "Please update CHANGELOG.md with the current version"
-            exit 1
-          fi
+
 
   test-docker:
     name: Test Docker Build

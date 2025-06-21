@@ -191,7 +191,7 @@ shellcheck vsix-cli
 1. **Create a feature branch**: `git checkout -b feature/your-feature`
 2. **Test thoroughly** on your platform
 3. **Update documentation** if needed
-4. **Add to CHANGELOG.md** if applicable
+4. **Test thoroughly** to ensure your changes work correctly
 5. **Ensure ShellCheck passes**
 
 ### Pull Request Guidelines
@@ -239,7 +239,7 @@ We use [Semantic Versioning](https://semver.org/):
 ### Version Update Process
 
 1. Update version in script: `readonly SCRIPT_VERSION="x.y.z"`
-2. Update CHANGELOG.md
+2. Test the changes thoroughly
 3. Create pull request
 4. Tag release after merge
 
@@ -309,7 +309,7 @@ We use [Semantic Versioning](https://semver.org/):
 ## 🙏 Recognition
 
 Contributors will be:
-- **Listed in CHANGELOG.md**
+- **Tested thoroughly**
 - **Mentioned in release notes**
 - **Added to contributors section** (if desired)
 

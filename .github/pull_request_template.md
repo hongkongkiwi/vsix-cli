@@ -54,7 +54,7 @@ Describe the results of your testing, including:
 ## Documentation
 
 - [ ] Updated README.md if needed
-- [ ] Updated CHANGELOG.md with changes
+- [ ] Tested changes thoroughly
 - [ ] Updated help text in script if needed
 - [ ] Updated CONTRIBUTING.md if workflow changes
 - [ ] Added code comments for complex logic
@@ -62,7 +62,7 @@ Describe the results of your testing, including:
 ## Backward Compatibility
 
 - [ ] This change is backward compatible
-- [ ] This change includes breaking changes (documented in CHANGELOG.md)
+- [ ] This change includes breaking changes (documented in description)
 - [ ] Migration guide provided for breaking changes
 
 ## Security

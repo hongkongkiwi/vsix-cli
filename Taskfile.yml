@@ -243,7 +243,7 @@ tasks:
         read -p "Enter new version (e.g., 1.2.3): " version
         sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$version\"/" {{.SCRIPT_NAME}}
         echo "Version updated from $current_version to $version"
-        echo "Don't forget to update CHANGELOG.md!"
+
 
   version:validate:
     desc: Validate version format and consistency
@@ -253,11 +253,6 @@ tasks:
         if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
           echo "Invalid version format: $version"
           echo "Expected format: X.Y.Z or X.Y.Z-prerelease (semantic versioning)"
-          exit 1
-        fi
-        if [[ ! "$version" =~ -dev ]] && ! grep -q "\[$version\]" CHANGELOG.md; then
-          echo "Version $version not found in CHANGELOG.md"
-          echo "Please update CHANGELOG.md with the current version"
           exit 1
         fi
         echo "Version validation passed: $version"
@@ -280,8 +275,6 @@ tasks:
         
         sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
         echo "Version bumped from $current_version to $new_version"
-        echo "Please update CHANGELOG.md with the new version!"
-
   version:bump:minor:
     desc: Bump minor version (1.0.0 -> 1.1.0)
     cmds:
@@ -299,8 +292,6 @@ tasks:
         
         sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
         echo "Version bumped from $current_version to $new_version"
-        echo "Please update CHANGELOG.md with the new version!"
-
   version:bump:major:
     desc: Bump major version (1.0.0 -> 2.0.0)
     cmds:
@@ -318,8 +309,6 @@ tasks:
         
         sed -i.bak "s/readonly SCRIPT_VERSION=.*/readonly SCRIPT_VERSION=\"$new_version\"/" {{.SCRIPT_NAME}}
         echo "Version bumped from $current_version to $new_version"
-        echo "Please update CHANGELOG.md with the new version!"
-
   version:bump:dev:
     desc: Create development version (1.0.0 -> 1.0.1-dev)
     cmds:
@@ -409,9 +398,8 @@ tasks:
       - task: test-all
       - task: version:bump:patch
       - echo "Patch version ready for release. Don't forget to:"
-      - echo "1. Update CHANGELOG.md"
-      - echo "2. Commit changes"
-      - echo "3. Run 'task release:publish'"
+      - echo "1. Commit changes"
+      - echo "2. Run 'task release:publish'"
 
   release:minor:
     desc: Release minor version (new features)
@@ -419,9 +407,8 @@ tasks:
       - task: test-all
       - task: version:bump:minor
       - echo "Minor version ready for release. Don't forget to:"
-      - echo "1. Update CHANGELOG.md"
-      - echo "2. Commit changes"
-      - echo "3. Run 'task release:publish'"
+      - echo "1. Commit changes"
+      - echo "2. Run 'task release:publish'"
 
   release:major:
     desc: Release major version (breaking changes)
@@ -429,9 +416,8 @@ tasks:
       - task: test-all
       - task: version:bump:major
       - echo "Major version ready for release. Don't forget to:"
-      - echo "1. Update CHANGELOG.md"
-      - echo "2. Commit changes"
-      - echo "3. Run 'task release:publish'"
+      - echo "1. Commit changes"
+      - echo "2. Run 'task release:publish'"
 
   release:rc:
     desc: Release candidate version
@@ -512,7 +498,7 @@ tasks:
     desc: Validate documentation completeness
     cmds:
       - |
-        files=("README.md" "LICENSE" "CHANGELOG.md" "CONTRIBUTING.md" ".gitignore")
+        files=("README.md" "LICENSE" "CONTRIBUTING.md" ".gitignore")
         for file in "${files[@]}"; do
           if [ ! -f "$file" ]; then
             echo "Missing required file: $file"
