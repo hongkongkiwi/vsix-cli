@@ -1,0 +1,27 @@
+# CODEOWNERS file for vsix-cli repository
+# This file defines who should review pull requests for different parts of the codebase
+# For more information: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global owner for all files
+* @hongkongkiwi
+
+# GitHub workflows and configuration
+.github/ @hongkongkiwi
+
+# Documentation
+*.md @hongkongkiwi
+docs/ @hongkongkiwi
+
+# Main script
+vsix-cli @hongkongkiwi
+
+# Docker configuration
+Dockerfile @hongkongkiwi
+.dockerignore @hongkongkiwi
+
+# Task runner and CI/CD
+Taskfile.yml @hongkongkiwi
+.github/workflows/ @hongkongkiwi
+
+# Dependabot will automatically request reviews from code owners
+# when it creates pull requests for dependencies 

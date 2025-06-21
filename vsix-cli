@@ -15,7 +15,7 @@ readonly EXIT_DOWNLOAD_FAILED=3
 readonly EXIT_INVALID_EXTENSION_ID=4
 readonly EXIT_MISSING_DEPENDENCIES=5
 readonly EXIT_FILE_EXISTS=6
-readonly EXIT_NETWORK_ERROR=7
+# readonly EXIT_NETWORK_ERROR=7  # Currently unused, kept for future use
 
 # Detect OS for cross-platform compatibility
 OS="$(uname -s)"
@@ -993,18 +993,20 @@ get_extension_info() {
   local extension_id="$1"
   local version="$2"
 
-  local publisher=$(echo "$extension_id" | cut -d '.' -f 1)
-  local name=$(echo "$extension_id" | cut -d '.' -f 2)
+  local publisher
+  local name
+  publisher=$(echo "$extension_id" | cut -d '.' -f 1)
+  name=$(echo "$extension_id" | cut -d '.' -f 2)
 
   info "Fetching extension information..."
 
-  # VS Code Marketplace API
-  local api_url="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
-  local version_filter=""
+  # VS Code Marketplace API (api_url kept for potential future use)
+  # local api_url="https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
+  # local version_filter=""
 
-  if [[ -n "$version" ]]; then
-    version_filter='"version":"'$version'",'
-  fi
+  # if [[ -n "$version" ]]; then
+  #   version_filter='"version":"'$version'",'
+  # fi
 
   local json_payload='{
         "filters": [{
@@ -1183,14 +1185,17 @@ process_single_extension() {
   fi
 
   # Extract publisher and name
-  local publisher=$(echo "$ext_id" | cut -d '.' -f 1)
-  local name=$(echo "$ext_id" | cut -d '.' -f 2)
+  local publisher
+  local name
+  publisher=$(echo "$ext_id" | cut -d '.' -f 1)
+  name=$(echo "$ext_id" | cut -d '.' -f 2)
 
   # Determine output directory
+  local output_dir
   if [[ -n "$custom_output_dir" ]]; then
-    local output_dir="$custom_output_dir"
+    output_dir="$custom_output_dir"
   else
-    local output_dir="$(pwd)"
+    output_dir="$(pwd)"
   fi
 
   # Create output directory if it doesn't exist
@@ -1210,8 +1215,10 @@ process_single_extension() {
   downloadUrl=$(get_download_url "$publisher" "$name" "$ext_version")
   
   # Show marketplace being used
-  local current_marketplace=$(get_current_marketplace)
-  local marketplace_name=$(get_marketplace_name "$current_marketplace")
+  local current_marketplace
+  local marketplace_name
+  current_marketplace=$(get_current_marketplace)
+  marketplace_name=$(get_marketplace_name "$current_marketplace")
   info "Using marketplace: $marketplace_name"
 
   # Download the extension (unless dry run)
@@ -1274,7 +1281,8 @@ process_single_extension() {
       local install_list=()
 
       for editor in "${requested_editors[@]}"; do
-        local editor_name=$(get_editor_display_name "$editor")
+        local editor_name
+        editor_name=$(get_editor_display_name "$editor")
         install_list+=("$editor_name")
       done
 
@@ -1347,8 +1355,10 @@ install_to_editor() {
   local vsix_file="$1"
   local editor_key="$2"
 
-  local cli_command=$(get_editor_cli_command "$editor_key")
-  local editor_name=$(get_editor_display_name "$editor_key")
+  local cli_command
+  local editor_name
+  cli_command=$(get_editor_cli_command "$editor_key")
+  editor_name=$(get_editor_display_name "$editor_key")
 
   if [[ -z "$cli_command" ]]; then
     error "Unknown editor: $editor_key"
@@ -1369,7 +1379,8 @@ install_to_editor() {
   fi
 
   # Method 2: Manual installation
-  local extensions_dir=$(get_editor_extensions_dir "$editor_key")
+  local extensions_dir
+  extensions_dir=$(get_editor_extensions_dir "$editor_key")
   install_extension_manually "$vsix_file" "$extensions_dir" "$editor_name"
 }
 
@@ -1738,7 +1749,8 @@ check_editor_availability() {
   local available_editors=()
 
   for editor in "${requested_editors[@]}"; do
-    local cli_command=$(get_editor_cli_command "$editor")
+    local cli_command
+    cli_command=$(get_editor_cli_command "$editor")
 
     if command -v "$cli_command" >/dev/null 2>&1; then
       available_editors+=("$editor")
@@ -2358,8 +2370,10 @@ execute_download() {
     
     # Simple approach: assume all arguments are extensions except if last one looks like a path
     if [[ ${#args[@]} -gt 1 ]]; then
-        local last_index=$((${#args[@]} - 1))
-        local last_arg="${args[$last_index]}"
+        local last_index
+        local last_arg
+        last_index=$((${#args[@]} - 1))
+        last_arg="${args[$last_index]}"
         # Check if last argument looks like a path (contains / but not a dot indicating extension ID)
         # But exclude URLs which also contain / but are valid extension inputs
         if [[ "$last_arg" == *"/"* && "$last_arg" != *"."* && ! "$last_arg" =~ ^https?:// ]] || [[ "$last_arg" =~ ^/ ]]; then
@@ -2461,8 +2475,10 @@ process_single_extension_original() {
     local custom_output="$2"
     
     # Extract publisher and name
-    local publisher=$(echo "$extensionId" | cut -d '.' -f 1)
-    local name=$(echo "$extensionId" | cut -d '.' -f 2)
+    local publisher
+    local name
+    publisher=$(echo "$extensionId" | cut -d '.' -f 1)
+    name=$(echo "$extensionId" | cut -d '.' -f 2)
 
     if [[ "$DRY_RUN" == true ]]; then
         minimal "DRY RUN MODE - No files will be downloaded or installed"
@@ -2531,7 +2547,8 @@ process_single_extension_original() {
     downloadUrl=$(get_download_url "$publisher" "$name" "$EXTENSION_VERSION")
     
     # Show marketplace being used
-    local marketplace_name=$(get_marketplace_name "$(get_current_marketplace)")
+    local marketplace_name
+    marketplace_name=$(get_marketplace_name "$(get_current_marketplace)")
     verbose "Using marketplace: $marketplace_name"
     verbose "Download URL: $downloadUrl"
 
@@ -2748,9 +2765,9 @@ process_single_extension_original() {
                 file_size=$(du -h "$final_file" 2>/dev/null | cut -f1 || echo "unknown")
             fi
             verbose "Size: $file_size"
-        elif command -v ls >/dev/null 2>&1; then
-            # Fallback using ls
-            file_size=$(ls -lh "$final_file" 2>/dev/null | awk '{print $5}' || echo "unknown")
+        elif command -v find >/dev/null 2>&1; then
+            # Fallback using find (more reliable than ls for scripting)
+            file_size=$(find "$final_file" -printf '%s\n' 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
             verbose "Size: $file_size"
         elif command -v stat >/dev/null 2>&1; then
             # Try stat as last resort

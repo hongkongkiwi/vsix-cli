@@ -72,13 +72,8 @@ jobs:
             fi
           fi
           
-          # Check if PR has auto-merge label
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'auto-merge') }}" == "true" ]]; then
-            echo "PR has auto-merge label"
-          else
-            echo "PR does not have auto-merge label"
-            should_merge=false
-          fi
+          # All Dependabot PRs are eligible for auto-merge based on update type
+          # No need to check for specific labels since this workflow only runs for Dependabot PRs
           
           echo "should_merge=$should_merge" >> $GITHUB_OUTPUT
 
@@ -104,8 +99,8 @@ jobs:
             comment_body="🚨 **Major version update detected** - This PR updates ${{ steps.metadata.outputs.dependency-names }} with a major version change. Please review manually before merging."
           elif [[ "${{ steps.metadata.outputs.package-ecosystem }}" == "docker" ]] && [[ "${{ steps.metadata.outputs.update-type }}" != "version-update:semver-patch" ]]; then
             comment_body="🐳 **Docker dependency update** - This PR updates Docker dependencies with a ${{ steps.metadata.outputs.update-type }} change. Please review manually before merging."
-          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'auto-merge') }}" != "true" ]]; then
-            comment_body="⚠️ **Manual review required** - This PR does not have the 'auto-merge' label. Please review and merge manually if appropriate."
+          elif [[ "${{ steps.metadata.outputs.package-ecosystem }}" == "github-actions" ]] && [[ "${{ steps.metadata.outputs.update-type }}" == "version-update:semver-major" ]]; then
+            comment_body="⚠️ **Manual review required** - This GitHub Actions update includes major version changes. Please review manually before merging."
           else
             comment_body="ℹ️ **Manual review required** - This PR requires manual review due to the update type or dependency."
           fi
