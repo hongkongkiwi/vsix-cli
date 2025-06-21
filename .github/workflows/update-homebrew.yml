@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to update formula for (e.g., 4.0.1)'
+        description: 'Version to update formula for (e.g., 4.6.0)'
         required: true
         type: string
 
@@ -21,6 +21,13 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Checkout homebrew tap repository
+      uses: actions/checkout@v4
+      with:
+        repository: hongkongkiwi/homebrew-vsix-cli
+        token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        path: homebrew-tap
 
     - name: Get version from release or input
       id: get-version
@@ -49,13 +56,14 @@ jobs:
         echo "sha256=$SHA256" >> $GITHUB_OUTPUT
         echo "url=$RELEASE_URL" >> $GITHUB_OUTPUT
 
-    - name: Update Homebrew formula
+    - name: Update Homebrew formula in tap repository
       run: |
         VERSION="${{ steps.get-version.outputs.version }}"
         SHA256="${{ steps.download.outputs.sha256 }}"
         URL="${{ steps.download.outputs.url }}"
         
-        # Update the formula file
+        # Update the formula file in the tap repository
+        cd homebrew-tap
         sed -i "s|url \".*\"|url \"$URL\"|g" Formula/vsix-cli.rb
         sed -i "s|version \".*\"|version \"$VERSION\"|g" Formula/vsix-cli.rb
         sed -i "s|sha256 \".*\"|sha256 \"$SHA256\"|g" Formula/vsix-cli.rb
@@ -63,10 +71,11 @@ jobs:
         echo "Updated formula:"
         cat Formula/vsix-cli.rb
 
-    - name: Commit and push changes
+    - name: Commit and push changes to tap repository
       run: |
         VERSION="${{ steps.get-version.outputs.version }}"
         
+        cd homebrew-tap
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
@@ -75,9 +84,9 @@ jobs:
         if git diff --staged --quiet; then
           echo "No changes to commit"
         else
-          git commit -m "Update Homebrew formula to v${VERSION}"
+          git commit -m "Update vsix-cli formula to v${VERSION}"
           git push
-          echo "Formula updated and pushed successfully"
+          echo "Formula updated and pushed to tap repository successfully"
         fi
 
     - name: Create pull request to homebrew-core (optional)
@@ -88,7 +97,7 @@ jobs:
         echo "https://github.com/Homebrew/homebrew-core/new/master?filename=Formula/vsix-cli.rb"
         echo ""
         echo "Formula content:"
-        cat Formula/vsix-cli.rb
+        cat homebrew-tap/Formula/vsix-cli.rb
 
     - name: Summary
       run: |
@@ -99,6 +108,7 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "- **Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
         echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Repository**: [hongkongkiwi/homebrew-vsix-cli](https://github.com/hongkongkiwi/homebrew-vsix-cli)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Installation" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
