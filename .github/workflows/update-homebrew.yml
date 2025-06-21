@@ -1,0 +1,112 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to update formula for (e.g., 4.0.1)'
+        required: true
+        type: string
+
+jobs:
+  update-homebrew:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    if: github.repository == 'hongkongkiwi/vsix-cli'
+    
+    steps:
+    - name: Checkout main repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Get version from release or input
+      id: get-version
+      run: |
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION=${VERSION#v}  # Remove 'v' prefix if present
+        else
+          VERSION="${{ github.event.inputs.version }}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
+    - name: Download release asset
+      id: download
+      run: |
+        VERSION="${{ steps.get-version.outputs.version }}"
+        RELEASE_URL="https://github.com/hongkongkiwi/vsix-cli/releases/download/v${VERSION}/vsix-cli"
+        
+        echo "Downloading: $RELEASE_URL"
+        curl -sL "$RELEASE_URL" -o vsix-cli-release
+        
+        # Calculate SHA256
+        SHA256=$(sha256sum vsix-cli-release | cut -d' ' -f1)
+        echo "SHA256: $SHA256"
+        echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+        echo "url=$RELEASE_URL" >> $GITHUB_OUTPUT
+
+    - name: Update Homebrew formula
+      run: |
+        VERSION="${{ steps.get-version.outputs.version }}"
+        SHA256="${{ steps.download.outputs.sha256 }}"
+        URL="${{ steps.download.outputs.url }}"
+        
+        # Update the formula file
+        sed -i "s|url \".*\"|url \"$URL\"|g" Formula/vsix-cli.rb
+        sed -i "s|version \".*\"|version \"$VERSION\"|g" Formula/vsix-cli.rb
+        sed -i "s|sha256 \".*\"|sha256 \"$SHA256\"|g" Formula/vsix-cli.rb
+        
+        echo "Updated formula:"
+        cat Formula/vsix-cli.rb
+
+    - name: Commit and push changes
+      run: |
+        VERSION="${{ steps.get-version.outputs.version }}"
+        
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git add Formula/vsix-cli.rb
+        
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update Homebrew formula to v${VERSION}"
+          git push
+          echo "Formula updated and pushed successfully"
+        fi
+
+    - name: Create pull request to homebrew-core (optional)
+      if: github.event_name == 'release'
+      run: |
+        VERSION="${{ steps.get-version.outputs.version }}"
+        echo "Consider creating a pull request to homebrew-core:"
+        echo "https://github.com/Homebrew/homebrew-core/new/master?filename=Formula/vsix-cli.rb"
+        echo ""
+        echo "Formula content:"
+        cat Formula/vsix-cli.rb
+
+    - name: Summary
+      run: |
+        VERSION="${{ steps.get-version.outputs.version }}"
+        SHA256="${{ steps.download.outputs.sha256 }}"
+        
+        echo "## Homebrew Formula Updated 🍺" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
+        echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Installation" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "brew tap hongkongkiwi/vsix-cli" >> $GITHUB_STEP_SUMMARY
+        echo "brew install vsix-cli" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Direct Installation" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "brew install hongkongkiwi/vsix-cli/vsix-cli" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY 

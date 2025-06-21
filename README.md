@@ -1,7 +1,7 @@
 # vsix-cli
 
 [![GitHub](https://img.shields.io/badge/GitHub-hongkongkiwi%2Fvsix--cli-blue?logo=github)](https://github.com/hongkongkiwi/vsix-cli)
-[![Version](https://img.shields.io/badge/version-4.0.0-green)](#)
+[![Version](https://img.shields.io/badge/version-4.0.1-green)](#)
 [![License](https://img.shields.io/badge/license-MIT-blue)](#license)
 
 A powerful command-line tool for downloading and installing VS Code extensions (.vsix files) from multiple marketplaces. Supports batch operations, multiple editors, and various extension sources.
@@ -16,6 +16,7 @@ A powerful command-line tool for downloading and installing VS Code extensions (
 - **Configuration Management**: Persistent settings with `config` command
 - **Auto-Update**: Built-in script update functionality
 - **Cross-Platform**: Works on Linux, macOS, Windows (including WSL)
+- **Multiple Installation Methods**: Direct download, Git, Docker, or Homebrew
 - **Progress Indicators**: Visual feedback for downloads
 - **Dry Run Mode**: Preview operations without executing them
 
@@ -78,11 +79,27 @@ docker run --rm -v $(pwd):/output hongkongkiwi/vsix-cli:latest download ms-pytho
 docker run --rm hongkongkiwi/vsix-cli:latest search python
 ```
 
-### Homebrew (Coming Soon)
+### Homebrew
 
 ```bash
-# Will be available after first release
-brew install hongkongkiwi/tap/vsix-cli
+# Add the tap and install
+brew tap hongkongkiwi/vsix-cli
+brew install vsix-cli
+
+# Or install directly without adding the tap
+brew install hongkongkiwi/vsix-cli/vsix-cli
+```
+
+**Update to latest version:**
+```bash
+brew update
+brew upgrade vsix-cli
+```
+
+**Uninstall:**
+```bash
+brew uninstall vsix-cli
+brew untap hongkongkiwi/vsix-cli  # Optional: remove the tap
 ```
 
 ### Dependencies
@@ -94,6 +111,8 @@ The script requires one of the following for downloads:
 Optional dependencies for enhanced functionality:
 - `jq` - For JSON parsing and better extension info display
 - `git` - For auto-update functionality
+
+**Note:** When installing via Homebrew, all required dependencies (`bash`, `curl`, `jq`) are automatically installed.
 
 ## ⚡ Quick Start
 

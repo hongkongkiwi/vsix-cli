@@ -102,10 +102,10 @@ tasks:
       - ./{{.SCRIPT_NAME}} version
 
   test-search:
-    desc: Test search functionality (dry run)
+    desc: Test search functionality
     deps: [make-executable]
     cmds:
-      - ./{{.SCRIPT_NAME}} search --dry-run python --limit 3
+      - ./{{.SCRIPT_NAME}} search python --limit 3
 
   test-download:
     desc: Test download functionality (dry run)
@@ -573,4 +573,55 @@ tasks:
     desc: Remove script from /usr/local/bin
     cmds:
       - sudo rm -f /usr/local/bin/{{.SCRIPT_NAME}}
-      - echo "{{.SCRIPT_NAME}} removed from /usr/local/bin/" 
+      - echo "{{.SCRIPT_NAME}} removed from /usr/local/bin/"
+
+  # Homebrew Tasks
+  homebrew:update-formula:
+    desc: Update Homebrew formula with current version and SHA256
+    deps: [make-executable]
+    cmds:
+      - ./scripts/update-homebrew-formula.sh
+
+  homebrew:test:
+    desc: Test Homebrew formula locally
+    deps: [homebrew:update-formula]
+    cmds:
+      - |
+        if ! command -v brew >/dev/null 2>&1; then
+          echo "Homebrew is not installed. Please install Homebrew first."
+          exit 1
+        fi
+        echo "Testing Homebrew formula..."
+        brew install --build-from-source Formula/{{.SCRIPT_NAME}}.rb
+        {{.SCRIPT_NAME}} --version
+        {{.SCRIPT_NAME}} --help
+        echo "Homebrew formula test completed successfully!"
+
+  homebrew:uninstall-test:
+    desc: Uninstall test installation from Homebrew
+    cmds:
+      - |
+        if command -v brew >/dev/null 2>&1; then
+          brew uninstall {{.SCRIPT_NAME}} 2>/dev/null || true
+          echo "Test installation removed"
+        fi
+
+  homebrew:validate:
+    desc: Validate Homebrew formula syntax
+    cmds:
+      - |
+        if ! command -v brew >/dev/null 2>&1; then
+          echo "Homebrew is not installed. Skipping validation."
+          exit 0
+        fi
+        echo "Validating Homebrew formula..."
+        brew audit --strict Formula/{{.SCRIPT_NAME}}.rb
+        echo "Formula validation passed!"
+
+  homebrew:all:
+    desc: Update, validate, and test Homebrew formula
+    cmds:
+      - task: homebrew:update-formula
+      - task: homebrew:validate
+      - task: homebrew:test
+      - task: homebrew:uninstall-test 
