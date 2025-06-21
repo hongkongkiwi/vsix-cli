@@ -380,6 +380,13 @@ done
     chmod +x vsix-cli
     ./vsix-cli install --quiet --yes --editors all ms-python.python
 
+# GitHub Actions example - Homebrew (macOS runners)
+- name: Install via Homebrew
+  run: |
+    brew tap hongkongkiwi/vsix-cli
+    brew install vsix-cli
+    vsix-cli install --quiet --yes --editors all ms-python.python
+
 # GitHub Actions example - Docker
 - name: Download extensions
   run: |
@@ -426,6 +433,11 @@ cat extensions.txt | docker run --rm -i -v $(pwd):/output \
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+### Repositories
+
+- **Main Project**: [hongkongkiwi/vsix-cli](https://github.com/hongkongkiwi/vsix-cli) - Main script and documentation
+- **Homebrew Formula**: [hongkongkiwi/homebrew-vsix-cli](https://github.com/hongkongkiwi/homebrew-vsix-cli) - Homebrew tap repository (auto-updated)
 
 ### Development Setup
 
