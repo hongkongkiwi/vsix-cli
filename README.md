@@ -90,6 +90,9 @@ brew install vsix-cli
 brew install hongkongkiwi/vsix-cli/vsix-cli
 ```
 
+**Using the tap repository:**
+The Homebrew formula is maintained in the [hongkongkiwi/homebrew-vsix-cli](https://github.com/hongkongkiwi/homebrew-vsix-cli) repository and is automatically updated with each release.
+
 **Update to latest version:**
 ```bash
 brew update
@@ -113,6 +116,8 @@ Optional dependencies for enhanced functionality:
 - `git` - For auto-update functionality
 
 **Note:** When installing via Homebrew, all required dependencies (`bash`, `curl`, `jq`) are automatically installed.
+
+**Homebrew Formula Updates:** The formula is automatically updated when new releases are published, ensuring you always have access to the latest version through Homebrew.
 
 ## ⚡ Quick Start
 
