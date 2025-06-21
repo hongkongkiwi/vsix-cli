@@ -116,9 +116,9 @@ get_update_urls() {
         fi
     fi
     
-    # Fallback to placeholder URLs
-    echo "https://raw.githubusercontent.com/your-username/your-repo/main/vsix-cli"
-    echo "https://api.github.com/repos/your-username/your-repo/releases/latest"
+    # Fallback to hongkongkiwi/vsix-cli repository
+    echo "https://raw.githubusercontent.com/hongkongkiwi/vsix-cli/main/vsix-cli"
+    echo "https://api.github.com/repos/hongkongkiwi/vsix-cli/releases/latest"
 }
 
 # Get update URLs
@@ -524,10 +524,54 @@ check_for_updates() {
   fi
 }
 
+# Function to detect if script is installed via Homebrew
+is_homebrew_install() {
+    local script_path
+    script_path="$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")"
+    
+    # Check common Homebrew paths (using regex patterns to handle /private prefix on macOS)
+    if [[ "$script_path" =~ .*/opt/homebrew/(bin|Cellar)/.* ]] || \
+       [[ "$script_path" =~ .*/usr/local/(bin|Cellar)/.* ]]; then
+        return 0
+    fi
+    
+    # Check if it's a Homebrew-managed symlink
+    if [[ -L "$0" ]]; then
+        local link_target
+        link_target="$(readlink "$0" 2>/dev/null || echo "")"
+        if [[ "$link_target" =~ .*/Cellar/.* ]] || \
+           [[ "$link_target" =~ .*/opt/homebrew/.* ]] || \
+           [[ "$link_target" =~ .*/usr/local/.* ]]; then
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
 # Function to perform self-update
 self_update() {
   local force_update="${1:-false}"
   local auto_yes="${2:-false}"
+
+  # Check if this is a Homebrew installation
+  if is_homebrew_install; then
+    info "Detected Homebrew installation"
+    info "To update vsix-cli, please use Homebrew instead:"
+    echo ""
+    echo "  brew update"
+    echo "  brew upgrade vsix-cli"
+    echo ""
+    info "If you want to force a manual update anyway, use the --force flag"
+    
+    # If not forced, exit here
+    if [[ "$force_update" == false ]]; then
+      return 0
+    else
+      warning "Forcing manual update despite Homebrew installation"
+      echo ""
+    fi
+  fi
 
   # Check if script is writable
   if [[ ! -w "$0" ]]; then
@@ -971,6 +1015,11 @@ OPTIONS:
     -y, --yes             Automatically answer yes to prompts
     --check               Only check for updates, don't install
     --force               Force update even if already up to date
+
+BEHAVIOR:
+    If the script is installed via Homebrew, it will recommend using
+    'brew update && brew upgrade vsix-cli' instead of self-updating.
+    Use --force to override this behavior.
 
 EXAMPLES:
     $SCRIPT_NAME update
@@ -1495,7 +1544,7 @@ create_temp_dir() {
     mkdir -p "$MAIN_TEMP_DIR"
   fi
   TEMP_DIRS+=("$MAIN_TEMP_DIR")
-  info "Created temporary directory: $MAIN_TEMP_DIR"
+  verbose "Created temporary directory: $MAIN_TEMP_DIR"
 }
 
 # Function to add temporary directory for cleanup
@@ -1508,7 +1557,7 @@ cleanup() {
   if [[ ${#TEMP_DIRS[@]} -gt 0 ]]; then
     for temp_dir in "${TEMP_DIRS[@]}"; do
       if [[ -n "$temp_dir" && -d "$temp_dir" ]]; then
-        info "Cleaning up temporary directory: $temp_dir"
+        verbose "Cleaning up temporary directory: $temp_dir"
         rm -rf "$temp_dir"
       fi
     done

@@ -1,4 +1,4 @@
-# vsix-cli
+# VSIX Command Line Tools
 
 [![GitHub](https://img.shields.io/badge/GitHub-hongkongkiwi%2Fvsix--cli-blue?logo=github)](https://github.com/hongkongkiwi/vsix-cli)
 [![Version](https://img.shields.io/badge/version-4.0.1-green)](#)
