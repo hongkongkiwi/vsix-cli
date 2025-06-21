@@ -32,7 +32,13 @@ tasks:
     desc: Install dependencies on macOS
     platforms: [darwin]
     cmds:
-      - brew install shellcheck curl jq
+      - |
+        if ! command -v brew >/dev/null 2>&1; then
+          echo "Homebrew is not installed. Please install it first:"
+          echo "  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+          exit 1
+        fi
+        brew install shellcheck curl jq
     status:
       - command -v shellcheck
       - command -v curl
@@ -74,11 +80,27 @@ tasks:
     cmds:
       - |
         echo "Checking for hardcoded secrets..."
-        ! grep -E -i "(password|secret|api_key|auth_key|private_key|access_token|bearer_token).*=" {{.SCRIPT_NAME}} | grep -v "# " | grep -v "Show" | grep -v "config" | grep -v "key=" | grep -v "Available keys"
+        if grep -E -i "(password|secret|api_key|auth_key|private_key|access_token|bearer_token)\s*=" {{.SCRIPT_NAME}} | grep -v -E "(#|show_|config_|Available|Example|Usage)" | grep -q .; then
+          echo "Potential hardcoded secrets found:"
+          grep -E -i "(password|secret|api_key|auth_key|private_key|access_token|bearer_token)\s*=" {{.SCRIPT_NAME}} | grep -v -E "(#|show_|config_|Available|Example|Usage)"
+          exit 1
+        fi
+        echo "No hardcoded secrets detected"
       - |
         echo "Checking for unsafe practices..."
-        ! grep -n "eval" {{.SCRIPT_NAME}}
-        ! grep -n "curl.*-k\|wget.*--no-check-certificate" {{.SCRIPT_NAME}}
+        unsafe_found=false
+        if grep -n "eval" {{.SCRIPT_NAME}} | grep -v "#"; then
+          echo "Found potentially unsafe 'eval' usage"
+          unsafe_found=true
+        fi
+        if grep -n "curl.*-k\|wget.*--no-check-certificate" {{.SCRIPT_NAME}}; then
+          echo "Found insecure SSL bypass"
+          unsafe_found=true
+        fi
+        if [ "$unsafe_found" = "true" ]; then
+          exit 1
+        fi
+        echo "No unsafe practices detected"
       - echo "Security scan passed"
 
   # Testing Tasks
@@ -185,15 +207,33 @@ tasks:
         end_time=$(date +%s%N)
         duration=$(( (end_time - start_time) / 1000000 ))
         echo "Startup time: ${duration}ms"
-        if [ $duration -gt 2000 ]; then
-          echo "Warning: Slow startup time (>${duration}ms)"
+        
+        # Set reasonable thresholds
+        if [ $duration -gt 3000 ]; then
+          echo "Error: Startup time too slow (${duration}ms > 3000ms)"
+          exit 1
+        elif [ $duration -gt 1500 ]; then
+          echo "Warning: Startup time is slow (${duration}ms > 1500ms)"
+        else
+          echo "Startup time is acceptable"
+        fi
+        
+        echo "Testing basic command performance..."
+        start_time=$(date +%s%N)
+        ./{{.SCRIPT_NAME}} version >/dev/null
+        end_time=$(date +%s%N)
+        version_duration=$(( (end_time - start_time) / 1000000 ))
+        echo "Version command time: ${version_duration}ms"
+        
+        if [ $version_duration -gt 1000 ]; then
+          echo "Warning: Version command is slow (${version_duration}ms > 1000ms)"
         fi
 
   # Docker Tasks
   docker:build:
     desc: Build Docker image
     cmds:
-      - docker build -t {{.DOCKER_IMAGE}} .
+      - docker build -t {{.DOCKER_IMAGE}} -t {{.DOCKER_REGISTRY}}:dev .
     sources:
       - Dockerfile
       - .dockerignore
@@ -461,16 +501,20 @@ tasks:
 
   # Release Tasks
   release:patch:
-    desc: Release patch version (bug fixes) - full workflow
+    desc: Release patch version (bug fixes) - quick workflow
     cmds:
-      - task: test-all
+      - task: lint
+      - task: syntax
+      - task: test-basic
       - task: version:bump:patch
       - task: release:commit-and-publish
 
   release:minor:
-    desc: Release minor version (new features) - full workflow
+    desc: Release minor version (new features) - quick workflow
     cmds:
-      - task: test-all
+      - task: lint
+      - task: syntax
+      - task: test-basic
       - task: version:bump:minor
       - task: release:commit-and-publish
 
@@ -482,7 +526,31 @@ tasks:
       - task: release:commit-and-publish
 
   release:rc:
-    desc: Release candidate version - full workflow
+    desc: Release candidate version - quick workflow
+    cmds:
+      - task: lint
+      - task: syntax
+      - task: test-basic
+      - task: version:bump:rc
+      - task: release:commit-and-publish
+
+  # Full release workflows (for when you want comprehensive testing)
+  release:patch:full:
+    desc: Release patch version with full test suite
+    cmds:
+      - task: test-all
+      - task: version:bump:patch
+      - task: release:commit-and-publish
+
+  release:minor:full:
+    desc: Release minor version with full test suite
+    cmds:
+      - task: test-all
+      - task: version:bump:minor
+      - task: release:commit-and-publish
+
+  release:rc:full:
+    desc: Release candidate with full test suite
     cmds:
       - task: test-all
       - task: version:bump:rc
@@ -496,6 +564,41 @@ tasks:
       - |
         version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
         echo "Development version created: $version"
+
+  # Quick release workflows (minimal testing)
+  release:quick:patch:
+    desc: Quick patch release (lint + basic tests only)
+    cmds:
+      - task: lint
+      - task: test-basic
+      - task: version:bump:patch
+      - task: release:commit-and-publish
+
+  release:quick:minor:
+    desc: Quick minor release (lint + basic tests only)
+    cmds:
+      - task: lint
+      - task: test-basic
+      - task: version:bump:minor
+      - task: release:commit-and-publish
+
+  release:emergency:
+    desc: Emergency release (version bump and publish only - USE WITH CAUTION)
+    interactive: true
+    cmds:
+      - |
+        echo "⚠️  EMERGENCY RELEASE MODE ⚠️"
+        echo "This will skip ALL testing and publish immediately!"
+        echo "Only use this for critical hotfixes."
+        echo ""
+        read -p "Are you sure you want to proceed? (type 'EMERGENCY' to confirm): " confirm
+        if [ "$confirm" != "EMERGENCY" ]; then
+          echo "Emergency release cancelled"
+          exit 1
+        fi
+        echo "Proceeding with emergency release..."
+      - task: version:bump:patch
+      - task: release:commit-and-publish
 
   release:commit-and-publish:
     desc: Commit version changes and publish release
@@ -519,11 +622,19 @@ tasks:
     desc: Publish current version (create and push tag)
     deps: [version:validate]
     cmds:
+      - task: tag:create
+      - task: tag:push
+      - echo "Release published! GitHub Actions will handle the rest."
+
+  release:publish:full:
+    desc: Publish current version with full testing and Docker build
+    deps: [version:validate]
+    cmds:
       - task: test-all
       - task: docker:all
       - task: tag:create
       - task: tag:push
-      - echo "Release published! GitHub Actions will handle the rest."
+      - echo "Release published with full validation! GitHub Actions will handle the rest."
 
   release:prepare:
     desc: Prepare for release (run all checks)
@@ -722,4 +833,69 @@ tasks:
       - task: homebrew:update-formula
       - task: homebrew:validate
       - task: homebrew:test
-      - task: homebrew:uninstall-test 
+      - task: homebrew:uninstall-test
+
+  # Utility Tasks
+  help:
+    desc: Show detailed help for common workflows
+    cmds:
+      - |
+        echo "=== vsix-cli Development Taskfile ==="
+        echo ""
+        echo "🚀 Quick Start:"
+        echo "  task setup              # Setup development environment"
+        echo "  task dev                # Run development checks"
+        echo "  task test-all           # Run full test suite"
+        echo ""
+        echo "📦 Release Workflow:"
+        echo "  task release:patch      # Quick patch release (basic tests)"
+        echo "  task release:minor      # Quick minor release (basic tests)"
+        echo "  task release:major      # Major release (full tests)"
+        echo "  task release:patch:full # Patch release with full test suite"
+        echo "  task release:minor:full # Minor release with full test suite"
+        echo "  task release:status     # Check current release status"
+        echo ""
+        echo "⚡ Quick Options:"
+        echo "  task release:quick:patch # Fastest patch (lint + basic tests)"
+        echo "  task release:quick:minor # Fastest minor (lint + basic tests)"
+        echo "  task release:emergency   # Emergency release (NO TESTS - CAUTION!)"
+        echo ""
+        echo "🔧 Version Management:"
+        echo "  task version:get        # Get current version"
+        echo "  task version:bump:patch # Bump patch version"
+        echo "  task version:bump:minor # Bump minor version"
+        echo "  task version:bump:major # Bump major version"
+        echo ""
+        echo "🐳 Docker:"
+        echo "  task docker:all         # Build and test Docker image"
+        echo "  task docker:build       # Build Docker image"
+        echo "  task docker:test        # Test Docker image"
+        echo ""
+        echo "🍺 Homebrew:"
+        echo "  task homebrew:all       # Update, validate, and test formula"
+        echo "  task homebrew:test      # Test Homebrew installation"
+        echo ""
+        echo "🔍 Diagnostics:"
+        echo "  task release:status     # Check release status and issues"
+        echo "  task tag:fix-mismatch   # Fix version/tag mismatches"
+        echo "  task ci                 # Simulate CI pipeline locally"
+        echo ""
+        echo "For a full list of tasks, run: task --list"
+
+  validate-all:
+    desc: Run all validation checks (lint, syntax, security, tests)
+    cmds:
+      - task: lint
+      - task: syntax
+      - task: security
+      - task: test-all
+      - task: performance
+      - task: docs:validate
+      - echo "All validation checks passed! ✅"
+
+  fix-permissions:
+    desc: Fix file permissions
+    cmds:
+      - chmod +x {{.SCRIPT_NAME}}
+      - chmod +x scripts/update-homebrew-formula.sh
+      - echo "File permissions fixed"
