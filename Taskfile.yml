@@ -361,10 +361,32 @@ tasks:
     cmds:
       - |
         version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
-        if git tag -l | grep -q "^v$version$"; then
-          echo "Tag v$version already exists!"
+        
+        # Check for uncommitted changes
+        if git status --porcelain | grep -q .; then
+          echo "Error: Cannot create tag with uncommitted changes!"
+          echo "Please commit or stash your changes first."
+          git status --short
           exit 1
         fi
+        
+        # Check if tag already exists
+        if git tag -l | grep -q "^v$version$"; then
+          echo "Tag v$version already exists!"
+          echo "Use 'task tag:delete' to remove it first, or bump the version."
+          exit 1
+        fi
+        
+        # Verify script version matches what we're about to tag
+        committed_version=$(git show HEAD:{{.SCRIPT_NAME}} | grep "readonly SCRIPT_VERSION=" | cut -d'"' -f2)
+        if [ "$committed_version" != "$version" ]; then
+          echo "Error: Version mismatch!"
+          echo "  Working directory version: $version"
+          echo "  Committed version: $committed_version"
+          echo "Please commit the version change first."
+          exit 1
+        fi
+        
         git tag -a "v$version" -m "Release v$version"
         echo "Created tag v$version"
 
@@ -391,42 +413,80 @@ tasks:
           echo "Tag deletion cancelled"
         fi
 
+  tag:fix-mismatch:
+    desc: Fix version mismatch by recreating tag from current commit
+    interactive: true
+    cmds:
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Current script version: $version"
+        
+        # Check if tag exists
+        if ! git tag -l | grep -q "^v$version$"; then
+          echo "Tag v$version does not exist. Nothing to fix."
+          exit 0
+        fi
+        
+        # Check if there are uncommitted changes
+        if git status --porcelain | grep -q .; then
+          echo "You have uncommitted changes. Please commit them first:"
+          git status --short
+          echo ""
+          read -p "Commit changes and recreate tag v$version? (y/N): " confirm
+          if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            git add {{.SCRIPT_NAME}}
+            git commit -m "Bump version to $version"
+            echo "Changes committed"
+          else
+            echo "Operation cancelled"
+            exit 1
+          fi
+        fi
+        
+        echo "Recreating tag v$version from current commit..."
+        read -p "Continue? This will delete and recreate the tag. (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+          # Delete existing tag
+          git tag -d "v$version" 2>/dev/null || true
+          git push origin ":refs/tags/v$version" 2>/dev/null || true
+          echo "Deleted old tag v$version"
+          
+          # Create new tag
+          git tag -a "v$version" -m "Release v$version"
+          git push origin "v$version"
+          echo "Recreated and pushed tag v$version"
+        else
+          echo "Tag recreation cancelled"
+        fi
+
   # Release Tasks
   release:patch:
-    desc: Release patch version (bug fixes)
+    desc: Release patch version (bug fixes) - full workflow
     cmds:
       - task: test-all
       - task: version:bump:patch
-      - echo "Patch version ready for release. Don't forget to:"
-      - echo "1. Commit changes"
-      - echo "2. Run 'task release:publish'"
+      - task: release:commit-and-publish
 
   release:minor:
-    desc: Release minor version (new features)
+    desc: Release minor version (new features) - full workflow
     cmds:
       - task: test-all
       - task: version:bump:minor
-      - echo "Minor version ready for release. Don't forget to:"
-      - echo "1. Commit changes"
-      - echo "2. Run 'task release:publish'"
+      - task: release:commit-and-publish
 
   release:major:
-    desc: Release major version (breaking changes)
+    desc: Release major version (breaking changes) - full workflow
     cmds:
       - task: test-all
       - task: version:bump:major
-      - echo "Major version ready for release. Don't forget to:"
-      - echo "1. Commit changes"
-      - echo "2. Run 'task release:publish'"
+      - task: release:commit-and-publish
 
   release:rc:
-    desc: Release candidate version
+    desc: Release candidate version - full workflow
     cmds:
       - task: test-all
       - task: version:bump:rc
-      - task: tag:create
-      - task: tag:push
-      - echo "Release candidate published!"
+      - task: release:commit-and-publish
 
   release:dev:
     desc: Development version for testing
@@ -436,6 +496,24 @@ tasks:
       - |
         version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
         echo "Development version created: $version"
+
+  release:commit-and-publish:
+    desc: Commit version changes and publish release
+    internal: true
+    cmds:
+      - |
+        version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "Committing version $version..."
+        
+        # Check if there are changes to commit
+        if git status --porcelain | grep -q .; then
+          git add {{.SCRIPT_NAME}}
+          git commit -m "Bump version to $version"
+          echo "Version changes committed"
+        else
+          echo "No changes to commit"
+        fi
+      - task: release:publish
 
   release:publish:
     desc: Publish current version (create and push tag)
@@ -457,10 +535,11 @@ tasks:
       - echo "Release preparation complete!"
 
   release:status:
-    desc: Show current release status
+    desc: Show current release status and check for issues
     cmds:
       - |
         version=$(grep "readonly SCRIPT_VERSION=" {{.SCRIPT_NAME}} | cut -d'"' -f2)
+        echo "=== Release Status ==="
         echo "Current version: $version"
         
         if [[ "$version" =~ -dev ]]; then
@@ -473,16 +552,49 @@ tasks:
           echo "Status: Stable release version"
         fi
         
+        echo ""
+        echo "=== Git Status ==="
+        if git status --porcelain | grep -q .; then
+          echo "Working directory: HAS UNCOMMITTED CHANGES"
+          echo "Uncommitted files:"
+          git status --short
+        else
+          echo "Working directory: CLEAN"
+        fi
+        
+        echo ""
+        echo "=== Tag Status ==="
         if git tag -l | grep -q "^v$version$"; then
           echo "Git tag: EXISTS (v$version)"
+          
+          # Check if committed version matches tag
+          if git rev-parse --verify "v$version" >/dev/null 2>&1; then
+            tagged_version=$(git show "v$version:{{.SCRIPT_NAME}}" 2>/dev/null | grep "readonly SCRIPT_VERSION=" | cut -d'"' -f2 || echo "unknown")
+            if [ "$tagged_version" = "$version" ]; then
+              echo "Tag version: MATCHES script version ✓"
+            else
+              echo "Tag version: MISMATCH! Tagged version is $tagged_version ✗"
+              echo "  → Use 'task tag:fix-mismatch' to fix this"
+            fi
+          fi
         else
           echo "Git tag: NOT CREATED"
         fi
         
-        if git status --porcelain | grep -q .; then
-          echo "Working directory: HAS UNCOMMITTED CHANGES"
-        else
-          echo "Working directory: CLEAN"
+        # Check committed version vs working directory
+        if git rev-parse --verify HEAD >/dev/null 2>&1; then
+          committed_version=$(git show HEAD:{{.SCRIPT_NAME}} 2>/dev/null | grep "readonly SCRIPT_VERSION=" | cut -d'"' -f2 || echo "unknown")
+          echo ""
+          echo "=== Version Consistency ==="
+          echo "Working directory version: $version"
+          echo "Last committed version: $committed_version"
+          
+          if [ "$committed_version" = "$version" ]; then
+            echo "Version consistency: OK ✓"
+          else
+            echo "Version consistency: MISMATCH ✗"
+            echo "  → Commit your changes or use 'task tag:fix-mismatch'"
+          fi
         fi
 
   # Documentation Tasks
