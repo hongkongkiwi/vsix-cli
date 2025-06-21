@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Script metadata
 readonly SCRIPT_NAME="vsix-cli"
-readonly SCRIPT_VERSION="4.7.2"
+readonly SCRIPT_VERSION="4.7.3"
 readonly SCRIPT_DESCRIPTION="Download VS Code extensions (.vsix files) from official or open-source marketplaces"
 
 # Exit codes
