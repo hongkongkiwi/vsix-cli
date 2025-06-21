@@ -132,15 +132,15 @@ tasks:
     desc: Test different marketplace functionality
     deps: [make-executable]
     cmds:
-      - ./{{.SCRIPT_NAME}} info --marketplace official --dry-run ms-python.python
-      - ./{{.SCRIPT_NAME}} info --marketplace openvsx --dry-run ms-python.python || true
-      - ./{{.SCRIPT_NAME}} info --marketplace coder --dry-run ms-python.python || true
+      - ./{{.SCRIPT_NAME}} info --marketplace official ms-python.python
+      - ./{{.SCRIPT_NAME}} info --marketplace openvsx ms-python.python || true
+      - ./{{.SCRIPT_NAME}} info --marketplace coder ms-python.python || true
 
   test-urls:
     desc: Test URL parsing functionality
     deps: [make-executable]
     cmds:
-      - ./{{.SCRIPT_NAME}} info --dry-run "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+      - ./{{.SCRIPT_NAME}} info "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
       - ./{{.SCRIPT_NAME}} download --dry-run "https://open-vsx.org/extension/ms-python/python"
 
   test-errors:
