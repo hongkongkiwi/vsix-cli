@@ -97,7 +97,7 @@ sudo apt-get install bash jq shellcheck
 
 # Test the script
 ./vsix-cli search test
-./vsix-cli info --dry-run ms-python.python
+./vsix-cli info ms-python.python
 ```
 
 ## 🧪 Testing

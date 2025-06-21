@@ -101,8 +101,8 @@ jobs:
 
       - name: Test dry-run commands
         run: |
-          ./vsix-cli search --dry-run python || true
-          ./vsix-cli info --dry-run ms-python.python || true
+          timeout 10 ./vsix-cli search python --limit 3 || true
+          ./vsix-cli info ms-python.python || true
           ./vsix-cli download --dry-run ms-python.python || true
 
   create-release:

@@ -417,7 +417,7 @@ chmod +x vsix-cli
 # Test basic functionality
 ./vsix-cli --help
 ./vsix-cli search test
-./vsix-cli info --dry-run ms-python.python
+./vsix-cli info ms-python.python
 ```
 
 ## 📝 License
