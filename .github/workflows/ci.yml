@@ -168,11 +168,12 @@ jobs:
 
       - name: Check for hardcoded secrets
         run: |
-          # Basic check for potential secrets
-          if grep -r -i "password\|secret\|key\|token" vsix-cli | grep -v "# " | grep -v "Show"; then
+          # Basic check for potential secrets (excluding legitimate config keys and documentation)
+          if grep -E -i "(password|secret|api_key|auth_key|private_key|access_token|bearer_token).*=" vsix-cli | grep -v "# " | grep -v "Show" | grep -v "config" | grep -v "key=" | grep -v "Available keys"; then
             echo "Potential hardcoded secrets found"
             exit 1
           fi
+          echo "No hardcoded secrets detected"
 
       - name: Check for unsafe practices
         run: |

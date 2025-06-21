@@ -50,9 +50,6 @@ updates:
     # ignore:
     #   - dependency-name: "actions/checkout"
     #     versions: ["v3"]
-    
-    # Increase pull request limit during security updates
-    versioning-strategy: increase
 
   # Docker (if you add any Dockerfile dependencies later)
   - package-ecosystem: "docker"

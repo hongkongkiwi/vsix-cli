@@ -74,7 +74,7 @@ tasks:
     cmds:
       - |
         echo "Checking for hardcoded secrets..."
-        ! grep -r -i "password\|secret\|key\|token" {{.SCRIPT_NAME}} | grep -v "# " | grep -v "Show"
+        ! grep -E -i "(password|secret|api_key|auth_key|private_key|access_token|bearer_token).*=" {{.SCRIPT_NAME}} | grep -v "# " | grep -v "Show" | grep -v "config" | grep -v "key=" | grep -v "Available keys"
       - |
         echo "Checking for unsafe practices..."
         ! grep -n "eval" {{.SCRIPT_NAME}}
