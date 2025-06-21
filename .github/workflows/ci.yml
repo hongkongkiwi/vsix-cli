@@ -151,13 +151,13 @@ jobs:
 
       - name: Test URL parsing
         run: |
-          ./vsix-cli info --dry-run "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
+          ./vsix-cli info "https://marketplace.visualstudio.com/items?itemName=ms-python.python"
           ./vsix-cli download --dry-run "https://open-vsx.org/extension/ms-python/python"
 
       - name: Test multiple marketplaces
         run: |
-          ./vsix-cli info --marketplace official --dry-run ms-python.python
-          ./vsix-cli info --marketplace openvsx --dry-run ms-python.python || true
+          ./vsix-cli info --marketplace official ms-python.python
+          ./vsix-cli info --marketplace openvsx ms-python.python || true
 
   security-scan:
     name: Security Scan
@@ -312,7 +312,7 @@ jobs:
           docker run --rm vsix-cli:test download --dry-run ms-python.python
           
           # Test search
-          docker run --rm vsix-cli:test search --dry-run python || true
+          timeout 10 docker run --rm vsix-cli:test search python --limit 3 || true
           
           # Test with volume mount
           mkdir -p test-output
