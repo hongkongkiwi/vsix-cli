@@ -184,16 +184,6 @@ jobs:
           prerelease: false
           generate_release_notes: true
 
-      - name: Trigger Homebrew Update
-        run: |
-          echo "Triggering Homebrew update workflow for version ${{ needs.validate-release.outputs.version }}"
-          curl -X POST \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/update-homebrew.yml/dispatches \
-            -d '{"ref":"main","inputs":{"version":"${{ needs.validate-release.outputs.version }}"}}'
-
   build-docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
@@ -236,6 +226,110 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    needs: [validate-release, create-release]
+    continue-on-error: true
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout homebrew tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: hongkongkiwi/homebrew-vsix-cli
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download release asset and calculate SHA256
+        id: download
+        run: |
+          VERSION="${{ needs.validate-release.outputs.version }}"
+          RELEASE_URL="https://github.com/hongkongkiwi/vsix-cli/releases/download/v${VERSION}/vsix-cli"
+          
+          echo "Downloading: $RELEASE_URL"
+          
+          # Wait a bit for the release asset to be available
+          sleep 30
+          
+          # Try to download and calculate SHA256 with retries
+          for i in {1..5}; do
+            if curl -sL "$RELEASE_URL" -o vsix-cli-release; then
+              SHA256=$(sha256sum vsix-cli-release | cut -d' ' -f1)
+              if [ -n "$SHA256" ] && [ "$SHA256" != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
+                echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+                echo "url=$RELEASE_URL" >> $GITHUB_OUTPUT
+                echo "SHA256: $SHA256"
+                break
+              fi
+            fi
+            echo "Attempt $i failed, retrying in 10 seconds..."
+            sleep 10
+          done
+          
+          if [ -z "$SHA256" ] || [ "$SHA256" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
+            echo "Failed to download or calculate SHA256"
+            exit 1
+          fi
+
+      - name: Update Homebrew formula in tap repository
+        run: |
+          VERSION="${{ needs.validate-release.outputs.version }}"
+          SHA256="${{ steps.download.outputs.sha256 }}"
+          URL="${{ steps.download.outputs.url }}"
+          
+          # Update the formula file in the tap repository
+          cd homebrew-tap
+          sed -i "s|url \".*\"|url \"$URL\"|g" Formula/vsix-cli.rb
+          sed -i "s|version \".*\"|version \"$VERSION\"|g" Formula/vsix-cli.rb
+          sed -i "s|sha256 \".*\"|sha256 \"$SHA256\"|g" Formula/vsix-cli.rb
+          
+          echo "Updated formula:"
+          cat Formula/vsix-cli.rb
+
+      - name: Commit and push changes to tap repository
+        run: |
+          VERSION="${{ needs.validate-release.outputs.version }}"
+          
+          cd homebrew-tap
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          git add Formula/vsix-cli.rb
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update vsix-cli formula to v${VERSION}"
+            git push
+            echo "Formula updated and pushed to tap repository successfully"
+          fi
+
+      - name: Summary
+        run: |
+          VERSION="${{ needs.validate-release.outputs.version }}"
+          SHA256="${{ steps.download.outputs.sha256 }}"
+          
+          echo "## Homebrew Formula Updated 🍺" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: [hongkongkiwi/homebrew-vsix-cli](https://github.com/hongkongkiwi/homebrew-vsix-cli)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "brew tap hongkongkiwi/vsix-cli" >> $GITHUB_STEP_SUMMARY
+          echo "brew install vsix-cli" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Direct Installation" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "brew install hongkongkiwi/vsix-cli/vsix-cli" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
   notify-release:
     name: Post-Release Notifications
