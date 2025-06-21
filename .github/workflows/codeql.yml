@@ -153,9 +153,13 @@ jobs:
       run: |
         echo "Checking download sources..."
         
-        # Extract all URLs from the script
-        urls=$(grep -o 'https://[^"]*' vsix-cli | sort -u)
+        # Extract URLs from the script, excluding regex patterns
+        # First get all URLs, then separate those with variables from those without
+        all_urls=$(grep -o 'https://[^"]*' vsix-cli | grep -v '\\' | sort -u)
+        urls=$(echo "$all_urls" | grep -v '\$' || true)
+        variable_urls=$(echo "$all_urls" | grep '\$' || true)
         
+        # Define trusted domains and domain patterns
         trusted_domains=(
           "marketplace.visualstudio.com"
           "open-vsx.org" 
@@ -166,11 +170,68 @@ jobs:
           "github.com"
         )
         
+        # Define trusted domain patterns (for template URLs)
+        trusted_patterns=(
+          "gallery.vsassets.io"  # For $publisher.gallery.vsassets.io
+        )
+        
         echo "Found URLs:"
         echo "$urls"
         
+        # Check URLs with variables
+        if [[ -n "$variable_urls" ]]; then
+          echo ""
+          echo "Found URLs with variables:"
+          echo "$variable_urls"
+          
+          # Validate variable URLs
+          for variable_url in $variable_urls; do
+            # Extract the base domain (before any variables)
+            if [[ "$variable_url" =~ ^https://\$[^.]+ ]]; then
+              # URL starts with variable like https://$publisher.gallery.vsassets.io
+              domain_pattern=$(echo "$variable_url" | sed 's|https://\$[^.]*\.||' | cut -d'/' -f1)
+              
+              trusted=false
+              for trusted_pattern in "${trusted_patterns[@]}"; do
+                if [[ "$domain_pattern" == "$trusted_pattern" ]]; then
+                  trusted=true
+                  break
+                fi
+              done
+              
+              if [[ "$trusted" == false ]]; then
+                echo "⚠️  Untrusted template domain pattern found: $domain_pattern"
+                exit 1
+              fi
+            else
+              # URL has variable in path like https://api.github.com/repos/$github_repo/releases
+              domain=$(echo "$variable_url" | sed 's|https://||' | cut -d'/' -f1)
+              
+              trusted=false
+              for trusted_domain in "${trusted_domains[@]}"; do
+                if [[ "$domain" == "$trusted_domain" ]]; then
+                  trusted=true
+                  break
+                fi
+              done
+              
+              if [[ "$trusted" == false ]]; then
+                echo "⚠️  Untrusted domain with variables found: $domain"
+                exit 1
+              fi
+            fi
+          done
+        fi
+        
+        # Validate regular URLs
+        
         for url in $urls; do
           domain=$(echo "$url" | sed 's|https://||' | cut -d'/' -f1)
+          
+          # Skip empty domains or domains with variables
+          if [[ -z "$domain" || "$domain" == *"$"* ]]; then
+            continue
+          fi
           
           trusted=false
           for trusted_domain in "${trusted_domains[@]}"; do
@@ -186,4 +247,4 @@ jobs:
           fi
         done
         
-        echo "✅ All domains are trusted" 
+        echo "✅ All domains and patterns are trusted" 
