@@ -16,7 +16,7 @@ jobs:
     if: github.actor == 'dependabot[bot]' && !github.event.pull_request.draft
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -124,7 +124,7 @@ jobs:
     if: github.actor == 'dependabot[bot]' && !github.event.pull_request.draft
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
